@@ -32,13 +32,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let is_running = Arc::new(AtomicBool::new(true));
     let is_running_clone = is_running.clone();
 
+    let link_type = detect_link_type(interface_name.as_deref());
+
     // 1. Launch raw packet capture thread
     let iface = interface_name.map(|s| s.to_string());
     let tx_alerts_capture = tx_alerts.clone();
     let tx_metrics_capture = tx_metrics.clone();
 
     thread::spawn(move || {
-        let default_link = if iface.is_some() { parser::LinkType::RadiotapWifi } else { parser::LinkType::Ethernet };
+        let default_link = link_type;
         
         // Attempt to create raw socket. If it fails (due to permissions or platform), log and wait
         let mut capture_engine = match capture::MmapCapture::new(iface.as_deref()) {
@@ -125,8 +127,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = AppState::new();
+    let link_type_str = match link_type {
+        parser::LinkType::Ethernet => "Ethernet",
+        parser::LinkType::Wifi80211 => "802.11 Wi-Fi",
+        parser::LinkType::RadiotapWifi => "802.11 Wi-Fi (Radiotap)",
+        parser::LinkType::Unknown => "Unknown (Auto-Detecting)",
+    };
     app.link_layer_info = match interface_name {
-        Some(name) => format!("Live interface: {}", name),
+        Some(name) => format!("Live: {} ({})", name, link_type_str),
         None => "Simulation Fallback / Bind Any".to_string(),
     };
 
@@ -311,4 +319,23 @@ fn scroll_pane_right(app: &mut AppState) {
 
 fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
+
+fn detect_link_type(interface: Option<&str>) -> parser::LinkType {
+    let Some(iface) = interface else {
+        return parser::LinkType::Ethernet;
+    };
+    // Query /sys/class/net/<interface>/type
+    if let Ok(type_str) = std::fs::read_to_string(format!("/sys/class/net/{}/type", iface)) {
+        if let Ok(type_val) = type_str.trim().parse::<u16>() {
+            match type_val {
+                1 => return parser::LinkType::Ethernet,             // ARPHRD_ETHER
+                801 => return parser::LinkType::Wifi80211,          // ARPHRD_IEEE80211
+                803 => return parser::LinkType::RadiotapWifi,       // ARPHRD_IEEE80211_RADIOTAP
+                _ => {}
+            }
+        }
+    }
+    // Fallback to auto-detecting per-packet using Unknown
+    parser::LinkType::Unknown
 }

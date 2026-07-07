@@ -43,6 +43,8 @@ The system is organized into the following main components:
 
 ---
 
+
+<!--
 ## Detection Rules
 
 The [StatefulDetectionEngine](file:///home/robin/Projects/sensors/WIFI-sensor/src/engine.rs#L81) evaluates the following stateful rules:
@@ -73,6 +75,8 @@ The [StatefulDetectionEngine](file:///home/robin/Projects/sensors/WIFI-sensor/sr
 * **Rule 10: Infotainment Services**
   - Identifies unauthorized clients connecting to private infotainment services (ports 9000, 8081, 8008) from non-whitelisted IP subnets.
 
+
+-->
 ---
 
 ## Getting Started
@@ -95,13 +99,6 @@ To run with live capture on a specific wireless or ethernet interface, execute t
 sudo ./target/release/network-sensor -i wlan0mon
 ```
 *(Or choose an ethernet interface, e.g., `eth0`)*
-
-#### 2. Simulation Fallback Mode
-If run without `-i` / `--interface`, or if socket permissions are not met, the application runs in simulation mode:
-```bash
-./target/release/network-sensor
-```
-*Note: In simulation mode, the interface is unbound. You can press `Enter` or `S` in the dashboard to inject simulated network packets for rule triggering demonstration.*
 
 ---
 
