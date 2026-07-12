@@ -12,9 +12,9 @@ use crossterm::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use network_sensor::dashboard::{AppState, ActivePane, draw_ui};
-use network_sensor::engine::StatefulDetectionEngine;
-use network_sensor::{capture, parser, locality, alert};
+use Network_IDS_v2::dashboard::{AppState, ActivePane, draw_ui};
+use Network_IDS_v2::engine::StatefulDetectionEngine;
+use Network_IDS_v2::{capture, parser, locality, alert};
 use ratatui::layout::Rect;
 
 fn main() -> Result<(), Box<dyn Error>> {

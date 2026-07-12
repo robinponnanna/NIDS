@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "Network_IDS_v2"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "criterion",
+ "crossterm",
+ "etherparse",
+ "flate2",
+ "libc",
+ "ratatui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -947,21 +962,6 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys",
-]
-
-[[package]]
-name = "network-sensor"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "criterion",
- "crossterm",
- "etherparse",
- "flate2",
- "libc",
- "ratatui",
- "serde",
- "serde_json",
 ]
 
 [[package]]
