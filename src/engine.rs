@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use chrono::Utc;
+use chrono::Local;
 use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer, AppLayer};
 use crate::alert::*;
 
@@ -262,7 +262,7 @@ impl StatefulDetectionEngine {
                                     event_name: "Anomalous Burst Pattern",
                                     severity: Severity::High,
                                     payload: EventPayload::AnomalousBurstPattern(AnomalousBurstPattern {
-                                        burst_start_ts: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                                        burst_start_ts: Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
                                         burst_duration_s: 60,
                                         targeted_message_ids: client.probed_ssids.clone(),
                                         missed_count: 0,
@@ -531,7 +531,7 @@ impl StatefulDetectionEngine {
                                     event_name: "Anomalous Burst Pattern",
                                     severity: Severity::Critical,
                                     payload: EventPayload::AnomalousBurstPattern(AnomalousBurstPattern {
-                                        burst_start_ts: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                                        burst_start_ts: Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
                                         burst_duration_s: 5,
                                         targeted_message_ids: vec![format!("DoIP/Diag Port {}", d_port)],
                                         missed_count: client.diag_port_attempts,
@@ -656,7 +656,7 @@ impl StatefulDetectionEngine {
         payload: EventPayload,
     ) -> IdsmMessage {
         self.alert_counter += 1;
-        let timestamp_utc = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
 
         IdsmMessage {
             seq_no: self.alert_counter,
@@ -668,7 +668,7 @@ impl StatefulDetectionEngine {
                 event_id,
                 event_name,
                 severity,
-                timestamp_utc,
+                timestamp,
                 vehicle_id_hash: "vehhash001".to_string(),
                 iface: self.iface.clone(),
                 capture_id: Some(format!("cap-{}", self.alert_counter)),

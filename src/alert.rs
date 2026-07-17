@@ -24,7 +24,7 @@ pub struct SensorEvent {
     pub event_id: &'static str,
     pub event_name: &'static str,
     pub severity: Severity,
-    pub timestamp_utc: String,
+    pub timestamp: String,
     pub vehicle_id_hash: String,
     pub iface: String,
     pub capture_id: Option<String>,

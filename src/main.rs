@@ -1,20 +1,20 @@
 use std::error::Error;
+use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
-use std::slice;
 
 use Network_IDS::engine::StatefulDetectionEngine;
-use Network_IDS::{capture, parser, locality};
+use Network_IDS::{capture, locality, parser};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
-    
+
     let mut interface_name = None;
     for i in 0..args.len() - 1 {
         if args[i] == "--interface" || args[i] == "-i" {
-            interface_name = Some(args[i+1].as_str());
+            interface_name = Some(args[i + 1].as_str());
         }
     }
 
@@ -30,13 +30,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     thread::spawn(move || {
         let default_link = link_type;
-        
+
         // Attempt to create raw socket. If it fails (due to permissions or platform), log and wait
         let mut capture_engine = match capture::MmapCapture::new(iface.as_deref()) {
             Ok(cap) => cap,
             Err(e) => {
                 eprintln!("[Warning] Raw socket capture failed initialization: {}.", e);
-                eprintln!("[Info] Running in simulation fallback mode. Real traffic will not be monitored.");
+                eprintln!(
+                    "[Info] Running in simulation fallback mode. Real traffic will not be monitored."
+                );
                 // Fall loop: park the thread
                 while is_running_clone.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(200));
@@ -47,23 +49,28 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Preallocate locality buffer and detection engine
         let mut locality_buffer = Box::new(locality::LocalityBuffer::new());
-        let mut detection_engine = StatefulDetectionEngine::new(iface.clone().unwrap_or_else(|| "v2x0".to_string()));
+        let mut detection_engine =
+            StatefulDetectionEngine::new(iface.clone().unwrap_or_else(|| "v2x0".to_string()));
 
         while is_running_clone.load(Ordering::Relaxed) {
             // Poll for next mmap retired block
             if let Some(block_guard) = capture_engine.next_block(Duration::from_millis(50)) {
                 locality_buffer.clear();
-                
+
                 // 1. Zero-copy extract packets from the block, pre-parse ports, and add to locality buffer
                 for raw_pkt in block_guard.packets() {
                     let parsed = parser::parse_packet(raw_pkt.data, default_link);
-                    
+
                     let mut port_key = 0u16;
                     match &parsed.transport {
-                        parser::TransportLayer::Tcp { src_port, dst_port, .. } => {
+                        parser::TransportLayer::Tcp {
+                            src_port, dst_port, ..
+                        } => {
                             port_key = std::cmp::min(*src_port, *dst_port);
                         }
-                        parser::TransportLayer::Udp { src_port, dst_port, .. } => {
+                        parser::TransportLayer::Udp {
+                            src_port, dst_port, ..
+                        } => {
                             port_key = std::cmp::min(*src_port, *dst_port);
                         }
                         _ => {}
@@ -92,10 +99,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                             slice::from_raw_parts(pkt_ref.data_ptr, pkt_ref.len as usize)
                         };
                         let parsed = parser::parse_packet(raw_slice, default_link);
-                        
-                        let timestamp = pkt_ref.sec as f64 + (pkt_ref.nsec as f64 / 1_000_000_000.0);
+
+                        let timestamp =
+                            pkt_ref.sec as f64 + (pkt_ref.nsec as f64 / 1_000_000_000.0);
                         let generated_alerts = detection_engine.process_packet(&parsed, timestamp);
-                        
+
                         for msg in generated_alerts {
                             let _ = tx_alerts_capture.send(msg);
                         }
@@ -123,9 +131,9 @@ fn detect_link_type(interface: Option<&str>) -> parser::LinkType {
     if let Ok(type_str) = std::fs::read_to_string(format!("/sys/class/net/{}/type", iface)) {
         if let Ok(type_val) = type_str.trim().parse::<u16>() {
             match type_val {
-                1 => return parser::LinkType::Ethernet,             // ARPHRD_ETHER
-                801 => return parser::LinkType::Wifi80211,          // ARPHRD_IEEE80211
-                803 => return parser::LinkType::RadiotapWifi,       // ARPHRD_IEEE80211_RADIOTAP
+                1 => return parser::LinkType::Ethernet,       // ARPHRD_ETHER
+                801 => return parser::LinkType::Wifi80211,    // ARPHRD_IEEE80211
+                803 => return parser::LinkType::RadiotapWifi, // ARPHRD_IEEE80211_RADIOTAP
                 _ => {}
             }
         }
