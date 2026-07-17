@@ -2,20 +2,11 @@ use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::slice;
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
 
-use Network_IDS_v2::dashboard::{AppState, ActivePane, draw_ui};
-use Network_IDS_v2::engine::StatefulDetectionEngine;
-use Network_IDS_v2::{capture, parser, locality, alert};
-use ratatui::layout::Rect;
+use Network_IDS::engine::StatefulDetectionEngine;
+use Network_IDS::{capture, parser, locality};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -28,7 +19,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let (tx_alerts, rx_alerts) = mpsc::channel();
-    let (tx_metrics, rx_metrics) = mpsc::channel();
     let is_running = Arc::new(AtomicBool::new(true));
     let is_running_clone = is_running.clone();
 
@@ -37,7 +27,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 1. Launch raw packet capture thread
     let iface = interface_name.map(|s| s.to_string());
     let tx_alerts_capture = tx_alerts.clone();
-    let tx_metrics_capture = tx_metrics.clone();
 
     thread::spawn(move || {
         let default_link = link_type;
@@ -47,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(cap) => cap,
             Err(e) => {
                 eprintln!("[Warning] Raw socket capture failed initialization: {}.", e);
-                eprintln!("[Info] Running in simulation fallback mode. Use 'Enter' or 'S' in the dashboard to inject traffic.");
+                eprintln!("[Info] Running in simulation fallback mode. Real traffic will not be monitored.");
                 // Fall loop: park the thread
                 while is_running_clone.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(200));
@@ -58,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Preallocate locality buffer and detection engine
         let mut locality_buffer = Box::new(locality::LocalityBuffer::new());
-        let mut detection_engine = StatefulDetectionEngine::new();
+        let mut detection_engine = StatefulDetectionEngine::new(iface.clone().unwrap_or_else(|| "v2x0".to_string()));
 
         while is_running_clone.load(Ordering::Relaxed) {
             // Poll for next mmap retired block
@@ -107,218 +96,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let timestamp = pkt_ref.sec as f64 + (pkt_ref.nsec as f64 / 1_000_000_000.0);
                         let generated_alerts = detection_engine.process_packet(&parsed, timestamp);
                         
-                        for alert in generated_alerts {
-                            let compressed = alert::IDSM::compress(&alert, &[parsed.clone()]);
-                            let _ = tx_alerts_capture.send((alert, compressed));
+                        for msg in generated_alerts {
+                            let _ = tx_alerts_capture.send(msg);
                         }
-
-                        let _ = tx_metrics_capture.send((pkt_ref.len as usize, pkt_ref.sec, pkt_ref.nsec));
                     }
                 }
             }
         }
     });
 
-    // 2. Initialize TUI Terminal Dashboard
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut app = AppState::new();
-    let link_type_str = match link_type {
-        parser::LinkType::Ethernet => "Ethernet",
-        parser::LinkType::Wifi80211 => "802.11 Wi-Fi",
-        parser::LinkType::RadiotapWifi => "802.11 Wi-Fi (Radiotap)",
-        parser::LinkType::Unknown => "Unknown (Auto-Detecting)",
-    };
-    app.link_layer_info = match interface_name {
-        Some(name) => format!("Live: {} ({})", name, link_type_str),
-        None => "Simulation Fallback / Bind Any".to_string(),
-    };
-
-    let mut last_tick = Instant::now();
-    let tick_rate = Duration::from_millis(40);
-
-    loop {
-        // Draw ratatui UI
-        terminal.draw(|f| draw_ui(f, &mut app))?;
-
-        // Pull alerts and metrics from channels
-        while let Ok((alert, compressed)) = rx_alerts.try_recv() {
-            app.total_raw_bytes += compressed.raw_payload_size;
-            app.total_compressed_bytes += compressed.compressed_size;
-            app.alerts.push(alert);
-            app.compressed_alerts.push(compressed);
-            // Auto-select latest alert
-            if !app.alerts.is_empty() {
-                app.alerts_table_state.select(Some(app.alerts.len() - 1));
-            }
-        }
-
-        while let Ok((size, _sec, _nsec)) = rx_metrics.try_recv() {
-            app.all_packets_captured += 1;
-            app.live_packets_count += 1;
-            app.recent_packets.push_back((Instant::now(), size));
-        }
-
-        // TUI event polling
-        let timeout = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or(Duration::from_secs(0));
-        if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) => {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => break,
-                        KeyCode::Char('p') => app.is_paused = !app.is_paused,
-                        KeyCode::Char('c') => {
-                            app.clear();
-                        }
-                        KeyCode::Tab => {
-                            app.active_pane = match app.active_pane {
-                                ActivePane::AlertsTable => ActivePane::PacketsTable,
-                                ActivePane::PacketsTable => ActivePane::IdsmHexView,
-                                ActivePane::IdsmHexView => ActivePane::IdsmJsonView,
-                                ActivePane::IdsmJsonView => ActivePane::AlertsTable,
-                            };
-                        }
-                        KeyCode::Up => {
-                            scroll_pane_up(&mut app);
-                        }
-                        KeyCode::Down => {
-                            scroll_pane_down(&mut app);
-                        }
-                        KeyCode::Left => {
-                            scroll_pane_left(&mut app);
-                        }
-                        KeyCode::Right => {
-                            scroll_pane_right(&mut app);
-                        }
-                        _ => {}
-                    }
-                }
-                Event::Mouse(mouse_event) => {
-                    let col = mouse_event.column;
-                    let row = mouse_event.row;
-                    let clicked_pane = if rect_contains(app.alerts_rect, col, row) {
-                        Some(ActivePane::AlertsTable)
-                    } else if rect_contains(app.packets_rect, col, row) {
-                        Some(ActivePane::PacketsTable)
-                    } else if rect_contains(app.hex_rect, col, row) {
-                        Some(ActivePane::IdsmHexView)
-                    } else if rect_contains(app.json_rect, col, row) {
-                        Some(ActivePane::IdsmJsonView)
-                    } else {
-                        None
-                    };
-
-                    if let Some(pane) = clicked_pane {
-                        app.active_pane = pane;
-                        match mouse_event.kind {
-                            event::MouseEventKind::ScrollUp => {
-                                scroll_pane_up(&mut app);
-                            }
-                            event::MouseEventKind::ScrollDown => {
-                                scroll_pane_down(&mut app);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if last_tick.elapsed() >= tick_rate {
-            app.prune_old_metrics();
-            last_tick = Instant::now();
+    println!("[Info] Network Intrusion Detection System started. Monitoring traffic...");
+    while let Ok(msg) = rx_alerts.recv() {
+        if let Ok(json) = serde_json::to_string_pretty(&msg) {
+            println!("{}", json);
         }
     }
 
-    is_running.store(false, Ordering::Relaxed);
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
     Ok(())
-}
-
-// Helpers for scrolling TUI panes
-fn scroll_pane_up(app: &mut AppState) {
-    match app.active_pane {
-        ActivePane::AlertsTable => {
-            if let Some(selected) = app.alerts_table_state.selected() {
-                if selected > 0 {
-                    app.alerts_table_state.select(Some(selected - 1));
-                }
-            }
-        }
-        ActivePane::PacketsTable => {
-            if let Some(selected) = app.packets_table_state.selected() {
-                if selected > 0 { app.packets_table_state.select(Some(selected - 1)); }
-            }
-        }
-        ActivePane::IdsmHexView => {
-            app.hex_scroll_offset = app.hex_scroll_offset.saturating_sub(1);
-        }
-        ActivePane::IdsmJsonView => {
-            app.json_scroll_offset = app.json_scroll_offset.saturating_sub(1);
-        }
-    }
-}
-
-fn scroll_pane_down(app: &mut AppState) {
-    match app.active_pane {
-        ActivePane::AlertsTable => {
-            if let Some(selected) = app.alerts_table_state.selected() {
-                if selected < app.alerts.len() - 1 {
-                    app.alerts_table_state.select(Some(selected + 1));
-                }
-            } else if !app.alerts.is_empty() {
-                app.alerts_table_state.select(Some(0));
-            }
-        }
-        ActivePane::PacketsTable => {
-            if let Some(selected) = app.packets_table_state.selected() {
-                app.packets_table_state.select(Some(selected + 1));
-            } else {
-                app.packets_table_state.select(Some(0));
-            }
-        }
-        ActivePane::IdsmHexView => {
-            app.hex_scroll_offset = app.hex_scroll_offset.saturating_add(1);
-        }
-        ActivePane::IdsmJsonView => {
-            app.json_scroll_offset = app.json_scroll_offset.saturating_add(1);
-        }
-    }
-}
-
-fn scroll_pane_left(app: &mut AppState) {
-    match app.active_pane {
-        ActivePane::IdsmHexView => {
-            app.hex_horiz_scroll_offset = app.hex_horiz_scroll_offset.saturating_sub(1);
-        }
-        ActivePane::IdsmJsonView => {
-            app.json_horiz_scroll_offset = app.json_horiz_scroll_offset.saturating_sub(1);
-        }
-        _ => {}
-    }
-}
-
-fn scroll_pane_right(app: &mut AppState) {
-    match app.active_pane {
-        ActivePane::IdsmHexView => {
-            app.hex_horiz_scroll_offset = app.hex_horiz_scroll_offset.saturating_add(1);
-        }
-        ActivePane::IdsmJsonView => {
-            app.json_horiz_scroll_offset = app.json_horiz_scroll_offset.saturating_add(1);
-        }
-        _ => {}
-    }
-}
-
-fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
-    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
 fn detect_link_type(interface: Option<&str>) -> parser::LinkType {

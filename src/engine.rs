@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use chrono::Local;
+use chrono::Utc;
 use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer, AppLayer};
-use crate::alert::SecurityAlert;
+use crate::alert::*;
 
 #[derive(Debug, Clone)]
 pub struct AccessPoint {
@@ -68,14 +68,10 @@ pub struct SessionState {
 }
 
 struct PendingAlert {
-    rule_name: &'static str,
-    severity: &'static str,
-    confidence: u32,
-    affected_device: String,
-    suspected_attacker: String,
-    reason: String,
-    evidence: String,
-    timeline: Vec<String>,
+    event_id: &'static str,
+    event_name: &'static str,
+    severity: Severity,
+    payload: EventPayload,
 }
 
 pub struct StatefulDetectionEngine {
@@ -93,10 +89,11 @@ pub struct StatefulDetectionEngine {
     
     // Time tracking for cleanup
     pub last_cleanup_time: f64,
+    pub iface: String,
 }
 
 impl StatefulDetectionEngine {
-    pub fn new() -> Self {
+    pub fn new(iface: String) -> Self {
         StatefulDetectionEngine {
             alert_counter: 0,
             access_points: HashMap::new(),
@@ -108,6 +105,7 @@ impl StatefulDetectionEngine {
             hotspot_channel: 6,
             carplay_active: false,
             last_cleanup_time: 0.0,
+            iface,
         }
     }
 
@@ -138,8 +136,8 @@ impl StatefulDetectionEngine {
     }
 
     /// Process a parsed packet and update the state machine.
-    /// Returns a list of generated SecurityAlerts.
-    pub fn process_packet(&mut self, pkt: &ParsedPacket, now: f64) -> Vec<SecurityAlert> {
+    /// Returns a list of generated IdsmMessages.
+    pub fn process_packet(&mut self, pkt: &ParsedPacket, now: f64) -> Vec<IdsmMessage> {
         self.expire_states(now);
         
         let mut alerts = Vec::new();
@@ -198,14 +196,19 @@ impl StatefulDetectionEngine {
         // Rule 8: Malformed Frames (evaluated first)
         if pkt.malformed {
             pending.push(PendingAlert {
-                rule_name: "Rule 8: Malformed Frame",
-                severity: "Critical",
-                confidence: 95,
-                affected_device: format_mac(pkt.src_mac),
-                suspected_attacker: format_mac(pkt.dst_mac),
-                reason: "Malformed packet header or invalid fields matching firmware exception crash pattern.".to_string(),
-                evidence: format!("Packet failed zero-copy bounds parsing. LinkType: {:?}", pkt.link_type),
-                timeline: vec![format!("Malformed frame received from source MAC: {}", format_mac(pkt.src_mac))]
+                event_id: "E8",
+                event_name: "Malformed Frame Detected",
+                severity: Severity::Critical,
+                payload: EventPayload::ProtocolConformantFlood(ProtocolConformantFlood {
+                    packet_signature_hash: format!("{:?}", pkt.link_type),
+                    signature_description: "Malformed frame: failed zero-copy bounds parsing".to_string(),
+                    sender_list: vec![SenderRate {
+                        sender_id: format_mac(pkt.src_mac),
+                        pkt_rate_per_sender: 1,
+                    }],
+                    fingerprint_ids: vec![format_mac(pkt.dst_mac)],
+                    recommended_mitigation: "Drop packet and log sender MAC for quarantine".to_string(),
+                }),
             });
         }
 
@@ -228,16 +231,18 @@ impl StatefulDetectionEngine {
                         // Rule 1.1: Probe Flooding
                         let probes_count = client.probe_timestamps.len();
                         if probes_count >= 25 {
-                            let conf = std::cmp::min(100, 50 + (probes_count as u32 - 25) * 2);
                             pending.push(PendingAlert {
-                                rule_name: "Rule 1: Scan and Probe Activity",
-                                severity: "Medium",
-                                confidence: conf,
-                                affected_device: "Broadcast".to_string(),
-                                suspected_attacker: client_str.clone(),
-                                reason: format!("Excessive probe requests ({} requests in last 60s) indicating aggressive Wi-Fi scanning.", probes_count),
-                                evidence: format!("Probe requests exceed normal discovery rate. Source MAC: {}", client_str),
-                                timeline: vec![format!("Probe storm initiated by: {}", client_str)]
+                                event_id: "E1.1",
+                                event_name: "Radio Packet Flood Start",
+                                severity: Severity::Medium,
+                                payload: EventPayload::RadioPacketFloodStart(RadioPacketFloodStart {
+                                    pkt_rate: probes_count as u32,
+                                    baseline_rate: 2,
+                                    window_duration_s: 60,
+                                    rssi_avg: rssi as f32,
+                                    modulation: "IEEE 802.11 Probe Request".to_string(),
+                                    channel: mgmt.channel.unwrap_or(0) as u16,
+                                }),
                             });
                             client.probe_timestamps.clear();
                         }
@@ -253,14 +258,16 @@ impl StatefulDetectionEngine {
                             }
                             if vehicle_scan {
                                 pending.push(PendingAlert {
-                                    rule_name: "Rule 1: Scan and Probe Activity",
-                                    severity: "High",
-                                    confidence: 90,
-                                    affected_device: "Gateway".to_string(),
-                                    suspected_attacker: client_str.clone(),
-                                    reason: format!("Automotive SSID enumeration detected. Client probed for {} unique SSIDs, querying vehicle profile names.", unique_ssids),
-                                    evidence: format!("Probed SSIDs: {:?}", client.probed_ssids),
-                                    timeline: vec![format!("Vehicle-directed scanning from: {}", client_str)]
+                                    event_id: "E1.2",
+                                    event_name: "Anomalous Burst Pattern",
+                                    severity: Severity::High,
+                                    payload: EventPayload::AnomalousBurstPattern(AnomalousBurstPattern {
+                                        burst_start_ts: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                                        burst_duration_s: 60,
+                                        targeted_message_ids: client.probed_ssids.clone(),
+                                        missed_count: 0,
+                                        timing_trace_uri: None,
+                                    }),
                                 });
                                 client.probed_ssids.clear();
                             }
@@ -275,14 +282,17 @@ impl StatefulDetectionEngine {
                                 let fails = client.auth_failures.len();
                                 if fails >= 5 {
                                     pending.push(PendingAlert {
-                                        rule_name: "Rule 2: Association and Authentication",
-                                        severity: "Medium",
-                                        confidence: 80 + (fails as u32 - 5) * 3,
-                                        affected_device: bssid_str.clone(),
-                                        suspected_attacker: client_str.clone(),
-                                        reason: format!("Wi-Fi authentication brute-force attempt. Client failed authentication {} times.", fails),
-                                        evidence: format!("Failed authentication attempts to AP: {}. Error Code: {}", bssid_str, status),
-                                        timeline: vec![format!("Client {} brute-forcing association on AP {}", client_str, bssid_str)]
+                                        event_id: "E2.1",
+                                        event_name: "High Broadcast Storm",
+                                        severity: Severity::Medium,
+                                        payload: EventPayload::HighBroadcastStorm(HighBroadcastStorm {
+                                            broadcast_ratio: 0.0,
+                                            pkt_rate: fails as u32,
+                                            top_broadcast_srcs: vec![client_str.clone()],
+                                            top_broadcast_pkt_counts: vec![fails as u32],
+                                            mitigation_applied: false,
+                                            mitigation_type: None,
+                                        }),
                                     });
                                     client.auth_failures.clear();
                                 }
@@ -298,14 +308,17 @@ impl StatefulDetectionEngine {
                         // Rule 2: Association Flood / Reconnect Abuse
                         if reconnects >= 8 {
                             pending.push(PendingAlert {
-                                rule_name: "Rule 2: Association and Authentication",
-                                severity: "Medium",
-                                confidence: 85,
-                                affected_device: bssid_str.clone(),
-                                suspected_attacker: client_str.clone(),
-                                reason: format!("Rapid reconnect abuse detected ({} associations in 60s). Possible driver exhaustion attempt.", reconnects),
-                                evidence: format!("Frequent association requests targeting AP BSSID: {}", bssid_str),
-                                timeline: vec![format!("Association flood from client MAC: {}", client_str)]
+                                event_id: "E2.2",
+                                event_name: "High Broadcast Storm",
+                                severity: Severity::Medium,
+                                payload: EventPayload::HighBroadcastStorm(HighBroadcastStorm {
+                                    broadcast_ratio: 0.1,
+                                    pkt_rate: reconnects as u32,
+                                    top_broadcast_srcs: vec![client_str.clone()],
+                                    top_broadcast_pkt_counts: vec![reconnects as u32],
+                                    mitigation_applied: false,
+                                    mitigation_type: None,
+                                }),
                             });
                             client.assoc_timestamps.clear();
                         }
@@ -315,14 +328,19 @@ impl StatefulDetectionEngine {
                             if ssid.contains("CarPlay") || ssid.contains("AndroidAuto") {
                                 if !self.carplay_active {
                                     pending.push(PendingAlert {
-                                        rule_name: "Rule 6: Wireless Projection",
-                                        severity: "High",
-                                        confidence: 88,
-                                        affected_device: "Infotainment".to_string(),
-                                        suspected_attacker: client_str.clone(),
-                                        reason: format!("Suspicious Wireless Projection onboarding. Phone client connected to SSID '{}' directly without Bluetooth handoff context.", ssid),
-                                        evidence: format!("CarPlay / Android Auto link initiated by unauthenticated MAC: {}", client_str),
-                                        timeline: vec![format!("CarPlay association request without BT exchange from: {}", client_str)]
+                                        event_id: "E6",
+                                        event_name: "Protocol Conformant Flood",
+                                        severity: Severity::High,
+                                        payload: EventPayload::ProtocolConformantFlood(ProtocolConformantFlood {
+                                            packet_signature_hash: format!("ssid_hash_{}", ssid),
+                                            signature_description: format!("Unauthenticated Wireless Projection Link setup targeting SSID: {}", ssid),
+                                            sender_list: vec![SenderRate {
+                                                sender_id: client_str.clone(),
+                                                pkt_rate_per_sender: 1,
+                                            }],
+                                            fingerprint_ids: vec![bssid_str.clone()],
+                                            recommended_mitigation: "Enforce Bluetooth handoff confirmation before projection association".to_string(),
+                                        }),
                                     });
                                 }
                             }
@@ -336,17 +354,19 @@ impl StatefulDetectionEngine {
                     // Rule 4.2: Beacon Spoofing / Twin AP Impersonation
                     if ssid == self.hotspot_ssid && mgmt.bssid != self.hotspot_bssid {
                         pending.push(PendingAlert {
-                            rule_name: "Rule 4: Management Frame Attacks",
-                            severity: "Critical",
-                            confidence: 95,
-                            affected_device: format_mac(self.hotspot_bssid),
-                            suspected_attacker: format_mac(mgmt.bssid),
-                            reason: format!("Rogue AP / Evil Twin detected! SSID '{}' is broadcasting on unauthorized BSSID '{}' on channel {}.", ssid, bssid_str, chan),
-                            evidence: format!("Authorized AP BSSID: {}. Spoofed AP BSSID: {}", format_mac(self.hotspot_bssid), bssid_str),
-                            timeline: vec![
-                                format!("SSID mismatch detected: authorized BSSID={}, rogue BSSID={}", format_mac(self.hotspot_bssid), bssid_str),
-                                format!("Rogue AP signal strength: {} dBm", rssi)
-                            ]
+                            event_id: "E4.2",
+                            event_name: "Protocol Conformant Flood",
+                            severity: Severity::Critical,
+                            payload: EventPayload::ProtocolConformantFlood(ProtocolConformantFlood {
+                                packet_signature_hash: format!("twin_ap_{}", ssid),
+                                signature_description: format!("Rogue AP / Evil Twin detected! Unauthorized BSSID '{}' is broadcasting authorized hotspot SSID '{}'.", bssid_str, ssid),
+                                sender_list: vec![SenderRate {
+                                    sender_id: bssid_str.clone(),
+                                    pkt_rate_per_sender: 1,
+                                }],
+                                fingerprint_ids: vec![format_mac(self.hotspot_bssid)],
+                                recommended_mitigation: "Block rogue BSSID and alert operator of active Evil Twin".to_string(),
+                            }),
                         });
                     }
 
@@ -355,26 +375,32 @@ impl StatefulDetectionEngine {
                         let sec = if mgmt.rsn_info.is_some() { "WPA2/WPA3" } else { "Open" };
                         if sec == "Open" {
                             pending.push(PendingAlert {
-                                rule_name: "Rule 5: Vehicle Hotspot Monitoring",
-                                severity: "Critical",
-                                confidence: 99,
-                                affected_device: bssid_str.clone(),
-                                suspected_attacker: "Gateway".to_string(),
-                                reason: "Vehicle hotspot security downgraded to Open! Unauthorized modification of wireless gateway configurations.".to_string(),
-                                evidence: format!("Security capabilities in beacon frame missing RSN tags."),
-                                timeline: vec![format!("Hotspot security settings changed to Open on AP: {}", bssid_str)]
+                                event_id: "E5.1",
+                                event_name: "Control Channel Starvation",
+                                severity: Severity::Critical,
+                                payload: EventPayload::ControlChannelStarvation(ControlChannelStarvation {
+                                    channel_id: chan.to_string(),
+                                    loss_rate: 0.0,
+                                    median_latency_ms: 0,
+                                    missing_message_ids: vec!["RSN_Tag_Missing".to_string()],
+                                    recent_message_samples: vec!["Security Downgrade to Open".to_string()],
+                                    safety_escalation_flag: true,
+                                }),
                             });
                         }
                         if chan != self.hotspot_channel && chan != 0 {
                             pending.push(PendingAlert {
-                                rule_name: "Rule 5: Vehicle Hotspot Monitoring",
-                                severity: "High",
-                                confidence: 90,
-                                affected_device: bssid_str.clone(),
-                                suspected_attacker: "Gateway".to_string(),
-                                reason: format!("Unexpected channel change for vehicle hotspot from channel {} to {}.", self.hotspot_channel, chan),
-                                evidence: format!("Beacon advertisement channel mismatch."),
-                                timeline: vec![format!("AP channel configuration changed on BSSID: {}", bssid_str)]
+                                event_id: "E5.2",
+                                event_name: "Channel Jamming Indication",
+                                severity: Severity::High,
+                                payload: EventPayload::ChannelJammingIndication(ChannelJammingIndication {
+                                    noise_floor_dbm: rssi as f32,
+                                    crc_error_rate: 0.0,
+                                    affected_channels: vec![self.hotspot_channel as u16, chan as u16],
+                                    spectrogram_id: None,
+                                    rf_scan_snapshot_uri: None,
+                                    mitigation_recommendation: "Investigate gateway controller for unauthorized channel changes".to_string(),
+                                }),
                             });
                             self.hotspot_channel = chan;
                         }
@@ -388,17 +414,17 @@ impl StatefulDetectionEngine {
                         // Rule 4.1: Deauthentication Flood
                         if deauths >= 10 {
                             pending.push(PendingAlert {
-                                rule_name: "Rule 4: Management Frame Attacks",
-                                severity: "Critical",
-                                confidence: 98,
-                                affected_device: client_str.clone(),
-                                suspected_attacker: format_mac(pkt.src_mac),
-                                reason: format!("Deauthentication flood targeting client '{}' ({} frames in 10s). Possible Wi-Fi disassociation attack.", client_str, deauths),
-                                evidence: format!("Source MAC '{}' sent flood of deauth frames to Target MAC '{}'.", format_mac(pkt.src_mac), client_str),
-                                timeline: vec![
-                                    format!("Deauth flood targets client: {}", client_str),
-                                    format!("Attacker MAC: {}", format_mac(pkt.src_mac))
-                                ]
+                                event_id: "E4.1",
+                                event_name: "Radio Packet Flood Start",
+                                severity: Severity::Critical,
+                                payload: EventPayload::RadioPacketFloodStart(RadioPacketFloodStart {
+                                    pkt_rate: deauths as u32,
+                                    baseline_rate: 1,
+                                    window_duration_s: 10,
+                                    rssi_avg: rssi as f32,
+                                    modulation: "802.11 Deauth/Disassoc".to_string(),
+                                    channel: 0,
+                                }),
                             });
                             client.deauth_timestamps.clear();
                         }
@@ -431,28 +457,34 @@ impl StatefulDetectionEngine {
             // Rule 3.1: Rekey and Handshake anomalies
             if error {
                 pending.push(PendingAlert {
-                    rule_name: "Rule 3: WPA/WPA2/WPA3 Negotiation",
-                    severity: "High",
-                    confidence: 85,
-                    affected_device: bssid_str.clone(),
-                    suspected_attacker: client_str.clone(),
-                    reason: "EAPOL Handshake Error flag set. Potential brute-force dictionary attack against PSK.".to_string(),
-                    evidence: format!("Key Info flags indicate negotiation error. KeyInfo: {:04X}", key_info),
-                    timeline: vec![format!("Handshake failed for client: {}", client_str)]
+                    event_id: "E3.1",
+                    event_name: "Protocol Conformant Flood",
+                    severity: Severity::High,
+                    payload: EventPayload::ProtocolConformantFlood(ProtocolConformantFlood {
+                        packet_signature_hash: format!("key_info_{:04X}", key_info),
+                        signature_description: "EAPOL Handshake Error flag set. Potential brute-force dictionary attack against PSK.".to_string(),
+                        sender_list: vec![SenderRate {
+                            sender_id: client_str.clone(),
+                            pkt_rate_per_sender: 1,
+                        }],
+                        fingerprint_ids: vec![bssid_str.clone()],
+                        recommended_mitigation: "Trigger temporary MAC lockout for candidate client".to_string(),
+                    }),
                 });
             }
 
             // KRACK retransmission indicators
             if eapol.replay_counter <= session.replay_count && session.replay_count > 0 {
                 pending.push(PendingAlert {
-                    rule_name: "Rule 3: WPA/WPA2/WPA3 Negotiation",
-                    severity: "Critical",
-                    confidence: 92,
-                    affected_device: bssid_str.clone(),
-                    suspected_attacker: client_str.clone(),
-                    reason: "Suspicious EAPOL Key Replay. Retransmission of handshake message 3 detected (Potential KRACK attack).".to_string(),
-                    evidence: format!("EAPOL Replay counter repeat: {} <= {}.", eapol.replay_counter, session.replay_count),
-                    timeline: vec![format!("KRACK indicator on client: {}", client_str)]
+                    event_id: "E3.2",
+                    event_name: "Packet Replay Flood",
+                    severity: Severity::Critical,
+                    payload: EventPayload::PacketReplayFlood(PacketReplayFlood {
+                        payload_hash: format!("replay_{}_{}", eapol.replay_counter, session.replay_count),
+                        repeat_count: 2,
+                        involved_srcs: vec![client_str.clone(), bssid_str.clone()],
+                        exemplar_packet_reference: Some("EAPOL Message 3 Replay".to_string()),
+                    }),
                 });
             }
             session.replay_count = eapol.replay_counter;
@@ -473,15 +505,18 @@ impl StatefulDetectionEngine {
                         let scan_ports_count = client.tcp_scans.len();
                         if scan_ports_count >= 20 {
                             let ip_or_mac = client.ip_address.map(|ip| ip.to_string()).unwrap_or_else(|| format_mac(client_mac_val));
+                            let target_ports: Vec<String> = client.tcp_scans.keys().map(|p| p.to_string()).collect();
                             pending.push(PendingAlert {
-                                rule_name: "Rule 9: Traffic After Association",
-                                severity: "High",
-                                confidence: 94,
-                                affected_device: ip_or_mac.clone(),
-                                suspected_attacker: "Internal Subnet".to_string(),
-                                reason: format!("TCP SYN Port Scan detected from associated host. Scanned {} unique ports in 60s.", scan_ports_count),
-                                evidence: format!("Source IP/MAC: {:?}. Ports targeted: {:?}", client.ip_address, client.tcp_scans.keys()),
-                                timeline: vec![format!("Associated client {} port scanning", format_mac(client_mac_val))]
+                                event_id: "E9.1",
+                                event_name: "Rapid Source Switching",
+                                severity: Severity::High,
+                                payload: EventPayload::RapidSourceSwitching(RapidSourceSwitching {
+                                    unique_src_count: 1,
+                                    aggregate_pkt_rate: scan_ports_count as u32,
+                                    top_srcs_summary: vec![ip_or_mac],
+                                    sample_rate: 1,
+                                    cluster_id: Some(format!("TCP Ports: {:?}", target_ports)),
+                                }),
                             });
                             client.tcp_scans.clear();
                         }
@@ -492,14 +527,16 @@ impl StatefulDetectionEngine {
                             if client.diag_port_attempts >= 5 {
                                 let ip_or_mac = client.ip_address.map(|ip| ip.to_string()).unwrap_or_else(|| format_mac(client_mac_val));
                                 pending.push(PendingAlert {
-                                    rule_name: "Rule 9: Traffic After Association",
-                                    severity: "Critical",
-                                    confidence: 97,
-                                    affected_device: "Vehicle ECU Gateway".to_string(),
-                                    suspected_attacker: ip_or_mac,
-                                    reason: "Unauthorized vehicle diagnostics sweep. Client repeatedly targeted critical services ports (e.g. DoIP port 13400 or updates port 9000).".to_string(),
-                                    evidence: format!("Targeted port: {}", d_port),
-                                    timeline: vec![format!("Client accessed diagnostics APIs on port: {}", d_port)]
+                                    event_id: "E9.2",
+                                    event_name: "Anomalous Burst Pattern",
+                                    severity: Severity::Critical,
+                                    payload: EventPayload::AnomalousBurstPattern(AnomalousBurstPattern {
+                                        burst_start_ts: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                                        burst_duration_s: 5,
+                                        targeted_message_ids: vec![format!("DoIP/Diag Port {}", d_port)],
+                                        missed_count: client.diag_port_attempts,
+                                        timing_trace_uri: Some(format!("diagnostics://{}", ip_or_mac)),
+                                    }),
                                 });
                                 client.diag_port_attempts = 0;
                             }
@@ -519,14 +556,19 @@ impl StatefulDetectionEngine {
                                 if client.infotainment_attempts >= 3 {
                                     let ip_or_mac = client.ip_address.map(|ip| ip.to_string()).unwrap_or_else(|| format_mac(client_mac_val));
                                     pending.push(PendingAlert {
-                                        rule_name: "Rule 10: Infotainment Services",
-                                        severity: "High",
-                                        confidence: 90,
-                                        affected_device: format!("Infotainment (Port {})", d_port),
-                                        suspected_attacker: ip_or_mac,
-                                        reason: format!("Abnormal access to infotainment maintenance endpoint. Host outside whitelisted subnet attempted connection to port {}.", d_port),
-                                        evidence: format!("Accessing entity IP: {:?}", client.ip_address),
-                                        timeline: vec![format!("Unauthorized infotainment access attempt on port: {}", d_port)]
+                                        event_id: "E10",
+                                        event_name: "Protocol Conformant Flood",
+                                        severity: Severity::High,
+                                        payload: EventPayload::ProtocolConformantFlood(ProtocolConformantFlood {
+                                            packet_signature_hash: format!("infotainment_port_{}", d_port),
+                                            signature_description: format!("Abnormal access to infotainment maintenance endpoint. Host outside whitelisted subnet attempted connection to port {}.", d_port),
+                                            sender_list: vec![SenderRate {
+                                                sender_id: ip_or_mac.clone(),
+                                                pkt_rate_per_sender: client.infotainment_attempts,
+                                            }],
+                                            fingerprint_ids: vec![format!("Port {}", d_port)],
+                                            recommended_mitigation: "Block connection and log unauthorized subnet access attempt".to_string(),
+                                        }),
                                     });
                                     client.infotainment_attempts = 0;
                                 }
@@ -542,15 +584,18 @@ impl StatefulDetectionEngine {
                     let scan_ports_count = client.udp_scans.len();
                     if scan_ports_count >= 20 {
                         let ip_or_mac = client.ip_address.map(|ip| ip.to_string()).unwrap_or_else(|| format_mac(client_mac_val));
+                        let target_ports: Vec<String> = client.udp_scans.keys().map(|p| p.to_string()).collect();
                         pending.push(PendingAlert {
-                            rule_name: "Rule 9: Traffic After Association",
-                            severity: "High",
-                            confidence: 92,
-                            affected_device: ip_or_mac,
-                            suspected_attacker: "Internal Subnet".to_string(),
-                            reason: format!("UDP Port Scan detected from associated host. Scanned {} unique UDP ports in 60s.", scan_ports_count),
-                            evidence: format!("Source IP/MAC: {}", format_mac(client_mac_val)),
-                            timeline: vec![format!("UDP port scanning by associated client: {}", format_mac(client_mac_val))]
+                            event_id: "E9.1U",
+                            event_name: "Rapid Source Switching",
+                            severity: Severity::High,
+                            payload: EventPayload::RapidSourceSwitching(RapidSourceSwitching {
+                                unique_src_count: 1,
+                                aggregate_pkt_rate: scan_ports_count as u32,
+                                top_srcs_summary: vec![ip_or_mac],
+                                sample_rate: 1,
+                                cluster_id: Some(format!("UDP Ports: {:?}", target_ports)),
+                            }),
                         });
                         client.udp_scans.clear();
                     }
@@ -570,14 +615,19 @@ impl StatefulDetectionEngine {
                     if tunnel_queries >= 25 {
                         let ip_or_mac = client.ip_address.map(|ip| ip.to_string()).unwrap_or_else(|| format_mac(client_mac_val));
                         pending.push(PendingAlert {
-                            rule_name: "Rule 9: Traffic After Association",
-                            severity: "High",
-                            confidence: 89,
-                            affected_device: "External DNS Server".to_string(),
-                            suspected_attacker: ip_or_mac,
-                            reason: format!("DNS Tunneling activity detected. Associated client generated {} anomalous high-length subdomain requests.", tunnel_queries),
-                            evidence: format!("Sample tunneling subdomains: {:?}", client.dns_queries.iter().take(3).map(|(q,_)| q).collect::<Vec<_>>()),
-                            timeline: vec![format!("DNS Tunneling signature matched from source: {}", format_mac(client_mac_val))]
+                            event_id: "E9.3",
+                            event_name: "Protocol Conformant Flood",
+                            severity: Severity::High,
+                            payload: EventPayload::ProtocolConformantFlood(ProtocolConformantFlood {
+                                packet_signature_hash: "dns_tunneling_ratio_high".to_string(),
+                                signature_description: format!("DNS Tunneling activity detected. Associated client generated {} anomalous high-length subdomain requests.", tunnel_queries),
+                                sender_list: vec![SenderRate {
+                                    sender_id: ip_or_mac,
+                                    pkt_rate_per_sender: tunnel_queries as u32,
+                                }],
+                                fingerprint_ids: client.dns_queries.iter().take(3).map(|(q,_)| q.clone()).collect(),
+                                recommended_mitigation: "Quarantine host and block DNS server domain routing".to_string(),
+                            }),
                         });
                         client.dns_queries.clear();
                     }
@@ -585,51 +635,46 @@ impl StatefulDetectionEngine {
             }
         }
 
-        // 4. Create actual SecurityAlert objects once all client state borrows are released
+        // 4. Create actual IdsmMessage objects once all client state borrows are released
         for p in pending {
-            alerts.push(self.create_alert(
-                p.rule_name,
+            alerts.push(self.create_message(
+                p.event_id,
+                p.event_name,
                 p.severity,
-                p.confidence,
-                p.affected_device,
-                p.suspected_attacker,
-                p.reason,
-                p.evidence,
-                p.timeline,
+                p.payload,
             ));
         }
 
         alerts
     }
 
-    fn create_alert(
+    fn create_message(
         &mut self,
-        rule_name: &'static str,
-        severity: &'static str,
-        confidence: u32,
-        affected_device: String,
-        suspected_attacker: String,
-        reason: String,
-        evidence: String,
-        timeline: Vec<String>,
-    ) -> SecurityAlert {
+        event_id: &'static str,
+        event_name: &'static str,
+        severity: Severity,
+        payload: EventPayload,
+    ) -> IdsmMessage {
         self.alert_counter += 1;
-        let dt = Local::now();
-        let timestamp = dt.format("%H:%M:%S%.6f").to_string();
-        let timestamp_epoch_ms = SystemTime_now_ms();
+        let timestamp_utc = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-        SecurityAlert {
-            id: self.alert_counter,
-            timestamp,
-            timestamp_epoch_ms,
-            rule_name,
-            severity,
-            confidence,
-            affected_device,
-            suspected_attacker,
-            reason,
-            evidence,
-            timeline,
+        IdsmMessage {
+            seq_no: self.alert_counter,
+            ttl_ms: 5000,
+            sensor_id: "sensor-Wi-Fi/Ethernet-01".to_string(),
+            sensor_cert_id: "cert-abc-123".to_string(),
+            signature: Vec::new(),
+            event: SensorEvent {
+                event_id,
+                event_name,
+                severity,
+                timestamp_utc,
+                vehicle_id_hash: "vehhash001".to_string(),
+                iface: self.iface.clone(),
+                capture_id: Some(format!("cap-{}", self.alert_counter)),
+                evidence_uri: Some(format!("evidence://cap-{}", self.alert_counter)),
+                payload,
+            },
         }
     }
 }
@@ -637,12 +682,4 @@ impl StatefulDetectionEngine {
 // Helpers
 fn format_mac(mac: [u8; 6]) -> String {
     format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
-}
-
-#[allow(non_snake_case)]
-fn SystemTime_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
