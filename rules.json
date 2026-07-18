@@ -1,0 +1,243 @@
+{
+    "rule1": {
+        "id": 1,
+        "enabled": true,
+        "action": "alert",
+        "message": "Probe Flooding",
+        "class": "arp",
+        "severity": 2,
+        "scope": {
+            "interfaces": [
+                "eth0",
+                "wlan0"
+            ]
+        },
+        "match": {
+            "ip": {
+                "src_ip": "any",
+                "dst_ip": "any",
+                "ip_version": [
+                    4,
+                    6
+                ]
+            },
+            "transport": {
+                "protocol": [
+                    "arp"
+                ],
+                "src_port": "any",
+                "dst_port": "any"
+            },
+            "direction": "ingress"
+        },
+        "context": {
+            "flow": {
+                "state": "established"
+            },
+            "limits": {
+                "max_conn_rate": {
+                    "per": "src_ip",
+                    "connections": 15,
+                    "interval_ms": 1000
+                }
+            }
+        },
+        "behaviour": {
+            "per_src": {
+                "max_requests_per_minute": 600
+            },
+            "per_service": {
+                "service_id": "ota_update",
+                "max_cmd_per_hour": 100
+            }
+        },
+        "metadata": {
+            "tags": [
+                "arp"
+            ],
+            "created-on": "18-07-2026"
+        }
+    },
+    "rule2": {
+        "id": 2,
+        "enabled": true,
+        "action": "alert",
+        "message": "Authentication Brute-Force",
+        "class": "eapol",
+        "severity": 1,
+        "scope": {
+            "interfaces": [
+                "eth0",
+                "wlan0"
+            ]
+        },
+        "match": {
+            "ip": {
+                "src_ip": "any",
+                "dst_ip": "any",
+                "ip_version": [
+                    4,
+                    6
+                ]
+            },
+            "transport": {
+                "protocol": [
+                    "http",
+                    "https",
+                    "ssh",
+                    "rdp",
+                    "smb",
+                    "ftp"
+                ],
+                "src_port": "any",
+                "dst_port": "any"
+            },
+            "direction": "ingress"
+        },
+        "context": {
+            "flow": {
+                "state": "established"
+            },
+            "limits": {
+                "max_conn_rate": {
+                    "per": "src_ip",
+                    "connections": 15,
+                    "interval_ms": 1000
+                }
+            }
+        },
+        "behaviour": {
+            "per_src": {
+                "max_requests_per_minute": 15
+            },
+            "per_service": {
+                "service_id": "ota_update",
+                "max_cmd_per_hour": 30
+            }
+        },
+        "metadata": {
+            "tags": [
+                "auth-login"
+            ],
+            "created-on": "18-07-2026"
+        }
+    },
+    "rule3": {
+        "id": 3,
+        "enabled": true,
+        "action": "alert",
+        "message": "TCP Port Scan",
+        "class": "tcp",
+        "severity": 2,
+        "scope": {
+            "interfaces": [
+                "eth0",
+                "wlan0"
+            ]
+        },
+        "match": {
+            "ip": {
+                "src_ip": "any",
+                "dst_ip": "any",
+                "ip_version": [
+                    4,
+                    6
+                ]
+            },
+            "transport": {
+                "protocol": [
+                    "tcp"
+                ],
+                "src_port": "any",
+                "dst_port": "any"
+            },
+            "direction": "ingress"
+        },
+        "context": {
+            "flow": {
+                "state": "any"
+            },
+            "limits": {
+                "max_conn_rate": {
+                    "per": "src_ip",
+                    "connections": 15,
+                    "interval_ms": 1000
+                }
+            }
+        },
+        "behaviour": {
+            "per_src": {
+                "max_requests_per_minute": 600
+            },
+            "per_service": {
+                "service_id": "ota_update",
+                "max_cmd_per_hour": 100
+            }
+        },
+        "metadata": {
+            "tags": [
+                "Tcp-scan"
+            ],
+            "created-on": "18-07-2026"
+        }
+    },
+    "rule4": {
+        "id": 4,
+        "enabled": true,
+        "action": "alert",
+        "message": "UDP Port Scan",
+        "class": "udp",
+        "severity": 2,
+        "scope": {
+            "interfaces": [
+                "eth0",
+                "wlan0"
+            ]
+        },
+        "match": {
+            "ip": {
+                "src_ip": "any",
+                "dst_ip": "any",
+                "ip_version": [
+                    4,
+                    6
+                ]
+            },
+            "transport": {
+                "protocol": [
+                    "tcp"
+                ],
+                "src_port": "any",
+                "dst_port": "any"
+            },
+            "direction": "ingress"
+        },
+        "context": {
+            "flow": {
+                "state": "any"
+            },
+            "limits": {
+                "max_conn_rate": {
+                    "per": "src_ip",
+                    "connections": 15,
+                    "interval_ms": 1000
+                }
+            }
+        },
+        "behaviour": {
+            "per_src": {
+                "max_requests_per_minute": 600
+            },
+            "per_service": {
+                "service_id": "ota_update",
+                "max_cmd_per_hour": 100
+            }
+        },
+        "metadata": {
+            "tags": [
+                "Udp-scan"
+            ],
+            "created-on": "18-07-2026"
+        }
+    }
+}

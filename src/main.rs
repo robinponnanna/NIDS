@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Preallocate locality buffer and detection engine
         let mut locality_buffer = Box::new(locality::LocalityBuffer::new());
         let mut detection_engine =
-            StatefulDetectionEngine::new(iface.clone().unwrap_or_else(|| "v2x0".to_string()));
+            StatefulDetectionEngine::new(iface.clone().unwrap_or_else(|| "wlan0".to_string()));
 
         while is_running_clone.load(Ordering::Relaxed) {
             // Poll for next mmap retired block
