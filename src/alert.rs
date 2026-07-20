@@ -27,8 +27,6 @@ pub struct SensorEvent {
     pub timestamp: String,
     pub vehicle_id_hash: String,
     pub iface: String,
-    pub capture_id: Option<String>,
-    pub evidence_uri: Option<String>,
     pub payload: EventPayload,
 }
 
@@ -106,7 +104,6 @@ pub struct SensorResourceExhaustion {
     pub mem_pct: f32,
     pub queue_drops: u32,
     pub sampling_mode_set: bool,
-    pub persisted_capture_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

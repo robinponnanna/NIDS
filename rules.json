@@ -32,7 +32,7 @@
         },
         "context": {
             "flow": {
-                "state": "established"
+                "state": "any"
             },
             "limits": {
                 "max_conn_rate": {

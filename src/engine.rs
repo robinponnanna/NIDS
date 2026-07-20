@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use crate::alert::*;
+use crate::parser::{AppLayer, NetworkLayer, ParsedPacket, TransportLayer};
 use chrono::Local;
 use serde::Deserialize;
-use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer, AppLayer};
-use crate::alert::*;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct AccessPoint {
@@ -26,11 +26,11 @@ pub struct ClientState {
     pub last_seen: f64,
     pub last_rssi: i8,
     pub last_seq_num: u16,
-    
+
     // Traffic monitoring states (Rule 9 & 10)
     pub ip_address: Option<std::net::IpAddr>,
-    pub tcp_scans: HashMap<u16, f64>, // port -> timestamp
-    pub udp_scans: HashMap<u16, f64>, // port -> timestamp
+    pub tcp_scans: HashMap<u16, f64>,    // port -> timestamp
+    pub udp_scans: HashMap<u16, f64>,    // port -> timestamp
     pub dns_queries: Vec<(String, f64)>, // domain -> timestamp
     pub diag_port_attempts: u32,
     pub infotainment_attempts: u32,
@@ -165,18 +165,18 @@ pub struct StatefulDetectionEngine {
     pub access_points: HashMap<[u8; 6], AccessPoint>,
     pub clients: HashMap<[u8; 6], ClientState>,
     pub sessions: HashMap<[u8; 6], SessionState>,
-    
+
     // Vehicle configurations (Rule 5 & 6)
     pub vehicle_hotspot_enabled: bool,
     pub hotspot_ssid: String,
     pub hotspot_bssid: [u8; 6],
     pub hotspot_channel: u8,
     pub carplay_active: bool,
-    
+
     // Time tracking for cleanup
     pub last_cleanup_time: f64,
     pub iface: String,
-    
+
     // Loaded rules from rules.json
     pub rules: Vec<EvaluatedRule>,
 }
@@ -202,14 +202,14 @@ impl StatefulDetectionEngine {
             if !r.enabled {
                 continue;
             }
-            let event_id: &'static str = Box::leak(format!("E_RULE_{}", r.id).into_boxed_str());
+            let event_id: &'static str = Box::leak(format!("RULE-{}", r.id).into_boxed_str());
             let event_name: &'static str = Box::leak(r.message.clone().into_boxed_str());
             let severity = match r.severity {
-                0 => Severity::Info,
-                1 => Severity::Low,
+                0 => Severity::Critical,
+                1 => Severity::High,
                 2 => Severity::Medium,
-                3 => Severity::High,
-                _ => Severity::Critical,
+                3 => Severity::Low,
+                _ => Severity::Info,
             };
             rules.push(EvaluatedRule {
                 id: r.id,
@@ -265,16 +265,19 @@ impl StatefulDetectionEngine {
         }
 
         // Expire inactive clients, APs, and sessions
-        self.clients.retain(|_, client| now - client.last_seen < 300.0);
-        self.access_points.retain(|_, ap| now - ap.last_seen < 300.0);
-        self.sessions.retain(|_, sess| now - sess.last_step_time < 300.0);
+        self.clients
+            .retain(|_, client| now - client.last_seen < 300.0);
+        self.access_points
+            .retain(|_, ap| now - ap.last_seen < 300.0);
+        self.sessions
+            .retain(|_, sess| now - sess.last_step_time < 300.0);
     }
 
     /// Process a parsed packet and update the state machine.
     /// Returns a list of generated IdsmMessages.
     pub fn process_packet(&mut self, pkt: &ParsedPacket, now: f64) -> Vec<IdsmMessage> {
         self.expire_states(now);
-        
+
         let mut alerts = Vec::new();
         let mut pending = Vec::new();
 
@@ -285,21 +288,29 @@ impl StatefulDetectionEngine {
         // 2. Track Access Point State
         if let Some(bssid) = pkt.bssid {
             if let Some(mgmt) = &pkt.wifi_mgmt {
-                if mgmt.subtype == 8 { // Beacon frame
+                if mgmt.subtype == 8 {
+                    // Beacon frame
                     let ssid = mgmt.ssid.clone().unwrap_or_default();
                     let chan = mgmt.channel.unwrap_or(0);
-                    let sec = if mgmt.rsn_info.is_some() { "WPA2/WPA3" } else { "Open" };
+                    let sec = if mgmt.rsn_info.is_some() {
+                        "WPA2/WPA3"
+                    } else {
+                        "Open"
+                    };
 
-                    let ap = self.access_points.entry(bssid).or_insert_with(|| AccessPoint {
-                        bssid,
-                        ssid: ssid.clone(),
-                        channel: chan,
-                        security: sec.to_string(),
-                        last_seen: now,
-                        beacon_count: 0,
-                        last_rssi: rssi,
-                    });
-                    
+                    let ap = self
+                        .access_points
+                        .entry(bssid)
+                        .or_insert_with(|| AccessPoint {
+                            bssid,
+                            ssid: ssid.clone(),
+                            channel: chan,
+                            security: sec.to_string(),
+                            last_seen: now,
+                            beacon_count: 0,
+                            last_rssi: rssi,
+                        });
+
                     ap.beacon_count += 1;
                     ap.last_seen = now;
                     ap.last_rssi = rssi;
@@ -312,9 +323,10 @@ impl StatefulDetectionEngine {
         // 3. Track Client State
         let client_mac = pkt.src_mac;
         if client_mac != [0; 6] && client_mac != [0xFF; 6] {
-            let client = self.clients.entry(client_mac).or_insert_with(|| {
-                ClientState::new(client_mac, rssi, seq, now)
-            });
+            let client = self
+                .clients
+                .entry(client_mac)
+                .or_insert_with(|| ClientState::new(client_mac, rssi, seq, now));
             client.last_seen = now;
             client.last_rssi = rssi;
             client.last_seq_num = seq;
@@ -353,7 +365,8 @@ impl StatefulDetectionEngine {
                         if let Some(limits) = &rule.context.limits {
                             if let Some(conn_rate) = limits.get("max_conn_rate") {
                                 let window = conn_rate.interval_ms as f64 / 1000.0;
-                                let count = timestamps.iter().filter(|&&t| now - t < window).count();
+                                let count =
+                                    timestamps.iter().filter(|&&t| now - t < window).count();
                                 if count >= conn_rate.connections as usize {
                                     triggered = true;
                                     count_to_report = count;
@@ -367,7 +380,10 @@ impl StatefulDetectionEngine {
 
                     if triggered {
                         timestamps.clear();
-                        let ip_or_mac = client.ip_address.map(|ip| ip.to_string()).unwrap_or_else(|| format_mac(client.mac));
+                        let ip_or_mac = client
+                            .ip_address
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_else(|| format_mac(client.mac));
                         pending.push(PendingAlert {
                             event_id: rule.event_id,
                             event_name: rule.event_name,
@@ -398,12 +414,7 @@ impl StatefulDetectionEngine {
 
         // 4. Create actual IdsmMessage objects once all client state borrows are released
         for p in pending {
-            alerts.push(self.create_message(
-                p.event_id,
-                p.event_name,
-                p.severity,
-                p.payload,
-            ));
+            alerts.push(self.create_message(p.event_id, p.event_name, p.severity, p.payload));
         }
 
         alerts
@@ -430,10 +441,8 @@ impl StatefulDetectionEngine {
                 event_name,
                 severity,
                 timestamp,
-                vehicle_id_hash: "vehhash001".to_string(),
+                vehicle_id_hash: "AA00BB1234".to_string(),
                 iface: self.iface.clone(),
-                capture_id: Some(format!("cap-{}", self.alert_counter)),
-                evidence_uri: Some(format!("evidence://cap-{}", self.alert_counter)),
                 payload,
             },
         }
@@ -442,12 +451,20 @@ impl StatefulDetectionEngine {
 
 // Helpers
 fn format_mac(mac: [u8; 6]) -> String {
-    format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
 }
 
 fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
     // 1. Check scope/interface
-    if !rule.scope.interfaces.iter().any(|i| i == "any" || i == iface) {
+    if !rule
+        .scope
+        .interfaces
+        .iter()
+        .any(|i| i == "any" || i == iface)
+    {
         return false;
     }
 
@@ -457,10 +474,14 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
             if !rule.match_config.ip.ip_version.contains(&4) {
                 return false;
             }
-            if rule.match_config.ip.src_ip != "any" && rule.match_config.ip.src_ip != src_ip.to_string() {
+            if rule.match_config.ip.src_ip != "any"
+                && rule.match_config.ip.src_ip != src_ip.to_string()
+            {
                 return false;
             }
-            if rule.match_config.ip.dst_ip != "any" && rule.match_config.ip.dst_ip != dst_ip.to_string() {
+            if rule.match_config.ip.dst_ip != "any"
+                && rule.match_config.ip.dst_ip != dst_ip.to_string()
+            {
                 return false;
             }
         }
@@ -468,18 +489,26 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
             if !rule.match_config.ip.ip_version.contains(&6) {
                 return false;
             }
-            if rule.match_config.ip.src_ip != "any" && rule.match_config.ip.src_ip != src_ip.to_string() {
+            if rule.match_config.ip.src_ip != "any"
+                && rule.match_config.ip.src_ip != src_ip.to_string()
+            {
                 return false;
             }
-            if rule.match_config.ip.dst_ip != "any" && rule.match_config.ip.dst_ip != dst_ip.to_string() {
+            if rule.match_config.ip.dst_ip != "any"
+                && rule.match_config.ip.dst_ip != dst_ip.to_string()
+            {
                 return false;
             }
         }
         NetworkLayer::Arp(arp) => {
-            if rule.match_config.ip.src_ip != "any" && rule.match_config.ip.src_ip != arp.sender_ip.to_string() {
+            if rule.match_config.ip.src_ip != "any"
+                && rule.match_config.ip.src_ip != arp.sender_ip.to_string()
+            {
                 return false;
             }
-            if rule.match_config.ip.dst_ip != "any" && rule.match_config.ip.dst_ip != arp.target_ip.to_string() {
+            if rule.match_config.ip.dst_ip != "any"
+                && rule.match_config.ip.dst_ip != arp.target_ip.to_string()
+            {
                 return false;
             }
         }
@@ -547,14 +576,29 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
                     }
                 }
                 "http" | "https" | "ssh" | "rdp" | "smb" | "ftp" => {
-                    if let TransportLayer::Tcp { src_port, dst_port, .. } = &pkt.transport {
+                    if let TransportLayer::Tcp {
+                        src_port, dst_port, ..
+                    } = &pkt.transport
+                    {
                         let is_proto_port = match proto.to_lowercase().as_str() {
-                            "http" => *src_port == 80 || *src_port == 8080 || *src_port == 8081 || *dst_port == 80 || *dst_port == 8080 || *dst_port == 8081,
+                            "http" => {
+                                *src_port == 80
+                                    || *src_port == 8080
+                                    || *src_port == 8081
+                                    || *dst_port == 80
+                                    || *dst_port == 8080
+                                    || *dst_port == 8081
+                            }
                             "https" => *src_port == 443 || *dst_port == 443,
                             "ssh" => *src_port == 22 || *dst_port == 22,
                             "rdp" => *src_port == 3389 || *dst_port == 3389,
                             "smb" => *src_port == 445 || *dst_port == 445,
-                            "ftp" => *src_port == 20 || *src_port == 21 || *dst_port == 20 || *dst_port == 21,
+                            "ftp" => {
+                                *src_port == 20
+                                    || *src_port == 21
+                                    || *dst_port == 20
+                                    || *dst_port == 21
+                            }
                             _ => false,
                         };
                         if is_proto_port {
@@ -577,7 +621,13 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
     }
 
     // 4. Check specific source and destination ports
-    if let TransportLayer::Tcp { src_port, dst_port, .. } | TransportLayer::Udp { src_port, dst_port, .. } = &pkt.transport {
+    if let TransportLayer::Tcp {
+        src_port, dst_port, ..
+    }
+    | TransportLayer::Udp {
+        src_port, dst_port, ..
+    } = &pkt.transport
+    {
         if !port_matches(&rule.match_config.transport.src_port, *src_port) {
             return false;
         }
@@ -591,8 +641,12 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
 
 fn port_matches(val: &serde_json::Value, actual_port: u16) -> bool {
     match val {
-        serde_json::Value::String(s) => s == "any" || s.parse::<u16>().map(|p| p == actual_port).unwrap_or(false),
-        serde_json::Value::Number(n) => n.as_u64().map(|p| p == actual_port as u64).unwrap_or(false),
+        serde_json::Value::String(s) => {
+            s == "any" || s.parse::<u16>().map(|p| p == actual_port).unwrap_or(false)
+        }
+        serde_json::Value::Number(n) => {
+            n.as_u64().map(|p| p == actual_port as u64).unwrap_or(false)
+        }
         _ => false,
     }
 }

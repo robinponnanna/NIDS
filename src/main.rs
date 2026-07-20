@@ -12,9 +12,55 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut interface_name = None;
-    for i in 0..args.len() - 1 {
-        if args[i] == "--interface" || args[i] == "-i" {
-            interface_name = Some(args[i + 1].as_str());
+    let mut forward_ip = None;
+    let mut forward_port = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                print_help();
+                return Ok(());
+            }
+            "--interface" | "-i" => {
+                if i + 1 < args.len() {
+                    interface_name = Some(args[i + 1].as_str());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--ip" | "--host" | "-ip" | "-host" => {
+                if i + 1 < args.len() {
+                    forward_ip = Some(args[i + 1].as_str());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--port" | "-port" | "-p" => {
+                if i + 1 < args.len() {
+                    forward_port = Some(args[i + 1].as_str());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let mut target_addr = None;
+    if let Some(ip) = forward_ip {
+        if ip.contains(':') {
+            target_addr = Some(ip.to_string());
+        } else if let Some(port) = forward_port {
+            target_addr = Some(format!("{}:{}", ip, port));
+        } else {
+            eprintln!("[Warning] No port specified. Defaulting to 9999.");
+            target_addr = Some(format!("{}:9999", ip));
         }
     }
 
@@ -113,10 +159,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    println!("[Info] Network Intrusion Detection System started. Monitoring traffic...");
+    let mut forwarder = target_addr.map(|addr| AlertForwarder::new(addr));
+
+    let start_msg = "[Info] Network Intrusion Detection System started. Monitoring traffic...";
+    println!("{}", start_msg);
+    if let Some(ref mut f) = forwarder {
+        f.send(start_msg);
+    }
+
     while let Ok(msg) = rx_alerts.recv() {
         if let Ok(json) = serde_json::to_string_pretty(&msg) {
             println!("{}", json);
+            if let Some(ref mut f) = forwarder {
+                f.send(&json);
+            }
         }
     }
 
@@ -140,4 +196,66 @@ fn detect_link_type(interface: Option<&str>) -> parser::LinkType {
     }
     // Fallback to auto-detecting per-packet using Unknown
     parser::LinkType::Unknown
+}
+
+struct AlertForwarder {
+    tcp_stream: Option<std::net::TcpStream>,
+    udp_socket: Option<std::net::UdpSocket>,
+    target_addr: String,
+}
+
+impl AlertForwarder {
+    fn new(target_addr: String) -> Self {
+        // Try TCP connection first, fallback to UDP
+        let tcp_stream = std::net::TcpStream::connect(&target_addr).ok();
+        let udp_socket = if tcp_stream.is_none() {
+            std::net::UdpSocket::bind("0.0.0.0:0").ok()
+        } else {
+            None
+        };
+        AlertForwarder {
+            tcp_stream,
+            udp_socket,
+            target_addr,
+        }
+    }
+
+    fn send(&mut self, data: &str) {
+        use std::io::Write;
+        if let Some(ref mut stream) = self.tcp_stream {
+            if stream.write_all(data.as_bytes()).is_ok() {
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+                return;
+            }
+            // TCP failed, try to reconnect or fallback to UDP
+            self.tcp_stream = None;
+            self.udp_socket = std::net::UdpSocket::bind("0.0.0.0:0").ok();
+        }
+        
+        if let Some(ref socket) = self.udp_socket {
+            let _ = socket.send_to(data.as_bytes(), &self.target_addr);
+        }
+    }
+}
+
+fn print_help() {
+    println!("Network Intrusion Detection System (NIDS) - Help Manual");
+    println!();
+    println!("Usage:");
+    println!("  Network_IDS [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  -i, --interface <name>   Specify the network interface to monitor (e.g. wlan0, eth0)");
+    println!("                           Default: wlan0");
+    println!("  -ip, --ip,               Specify the destination host/IP to forward monitored and filtered data");
+    println!("  -host, --host <ip[:port]> Example: --ip 192.168.1.50 or --ip 127.0.0.1:8080");
+    println!("  -p, -port, --port <port> Specify the destination port number (if not provided in host/IP)");
+    println!("                           Default: 9999");
+    println!("  -h, --help               Display this help manual and exit");
+    println!();
+    println!("Examples:");
+    println!("  Network_IDS -i eth0");
+    println!("  Network_IDS --ip 127.0.0.1 --port 9090");
+    println!("  Network_IDS -i wlan0 -ip 192.168.1.10:9999");
 }
