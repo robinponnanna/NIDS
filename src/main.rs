@@ -1,12 +1,15 @@
+use chrono::Local;
 use std::error::Error;
+use std::fs::File;
+use std::io::Write;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use Network_IDS::engine::StatefulDetectionEngine;
-use Network_IDS::{capture, locality, parser};
+use network_ids::engine::StatefulDetectionEngine;
+use network_ids::{capture, locality, parser};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -14,6 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut interface_name = None;
     let mut forward_ip = None;
     let mut forward_port = None;
+    let mut log_file_path = Some("nids.log");
 
     let mut i = 1;
     while i < args.len() {
@@ -46,11 +50,32 @@ fn main() -> Result<(), Box<dyn Error>> {
                     i += 1;
                 }
             }
+            "--log" | "-l" | "--output" | "-o" => {
+                if i + 1 < args.len() {
+                    let val = args[i + 1].as_str();
+                    if val == "none" || val == "null" {
+                        log_file_path = None;
+                    } else {
+                        log_file_path = Some(val);
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             _ => {
                 i += 1;
             }
         }
     }
+
+    let logger = match Logger::new(log_file_path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[Error] Failed to open log file: {}", e);
+            return Err(Box::new(e));
+        }
+    };
 
     let mut target_addr = None;
     if let Some(ip) = forward_ip {
@@ -59,7 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else if let Some(port) = forward_port {
             target_addr = Some(format!("{}:{}", ip, port));
         } else {
-            eprintln!("[Warning] No port specified. Defaulting to 9999.");
+            logger.log_err("[Warning] No port specified. Defaulting to 9999.");
             target_addr = Some(format!("{}:9999", ip));
         }
     }
@@ -73,6 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 1. Launch raw packet capture thread
     let iface = interface_name.map(|s| s.to_string());
     let tx_alerts_capture = tx_alerts.clone();
+    let logger_capture = logger.clone();
 
     thread::spawn(move || {
         let default_link = link_type;
@@ -81,8 +107,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut capture_engine = match capture::MmapCapture::new(iface.as_deref()) {
             Ok(cap) => cap,
             Err(e) => {
-                eprintln!("[Warning] Raw socket capture failed initialization: {}.", e);
-                eprintln!(
+                logger_capture.log_err(&format!(
+                    "[Warning] Raw socket capture failed initialization: {}\n[Time] {}.",
+                    e,
+                    Local::now()
+                ));
+                logger_capture.log_err(
                     "[Info] Running in simulation fallback mode. Real traffic will not be monitored."
                 );
                 // Fall loop: park the thread
@@ -161,15 +191,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut forwarder = target_addr.map(|addr| AlertForwarder::new(addr));
 
-    let start_msg = "[Info] Network Intrusion Detection System started. Monitoring traffic...";
-    println!("{}", start_msg);
-    if let Some(ref mut f) = forwarder {
-        f.send(start_msg);
-    }
+    let start_msg = format!(
+        "[Info] Network Intrusion Detection System started at {}.\nMonitoring traffic... ",
+        Local::now()
+    );
+    logger.log(&start_msg);
+    // if let Some(ref mut f) = forwarder {
+    //     f.send(start_msg);
+    // }
 
     while let Ok(msg) = rx_alerts.recv() {
         if let Ok(json) = serde_json::to_string_pretty(&msg) {
-            println!("{}", json);
+            logger.log(&json);
             if let Some(ref mut f) = forwarder {
                 f.send(&json);
             }
@@ -232,7 +265,7 @@ impl AlertForwarder {
             self.tcp_stream = None;
             self.udp_socket = std::net::UdpSocket::bind("0.0.0.0:0").ok();
         }
-        
+
         if let Some(ref socket) = self.udp_socket {
             let _ = socket.send_to(data.as_bytes(), &self.target_addr);
         }
@@ -246,16 +279,68 @@ fn print_help() {
     println!("  Network_IDS [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  -i, --interface <name>   Specify the network interface to monitor (e.g. wlan0, eth0)");
+    println!(
+        "  -i, --interface <name>   Specify the network interface to monitor (e.g. wlan0, eth0)"
+    );
     println!("                           Default: wlan0");
-    println!("  -ip, --ip,               Specify the destination host/IP to forward monitored and filtered data");
+    println!(
+        "  -ip, --ip,               Specify the destination host/IP to forward monitored and filtered data"
+    );
     println!("  -host, --host <ip[:port]> Example: --ip 192.168.1.50 or --ip 127.0.0.1:8080");
-    println!("  -p, -port, --port <port> Specify the destination port number (if not provided in host/IP)");
+    println!(
+        "  -p, -port, --port <port> Specify the destination port number (if not provided in host/IP)"
+    );
     println!("                           Default: 9999");
+    println!("  -l, --log,");
+    println!(
+        "  -o, --output <path>      Specify the log file path to write output (or 'none' to disable)"
+    );
+    println!("                           Default: nids.log");
     println!("  -h, --help               Display this help manual and exit");
     println!();
     println!("Examples:");
     println!("  Network_IDS -i eth0");
     println!("  Network_IDS --ip 127.0.0.1 --port 9090");
     println!("  Network_IDS -i wlan0 -ip 192.168.1.10:9999");
+    println!("  Network_IDS --log output.log");
+}
+
+#[derive(Clone)]
+struct Logger {
+    file: Option<Arc<Mutex<File>>>,
+}
+
+impl Logger {
+    fn new(path: Option<&str>) -> Result<Self, std::io::Error> {
+        let file = if let Some(p) = path {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)?;
+            Some(Arc::new(Mutex::new(f)))
+        } else {
+            None
+        };
+        Ok(Logger { file })
+    }
+
+    fn log(&self, msg: &str) {
+        println!("{}", msg);
+        if let Some(ref file_mutex) = self.file {
+            if let Ok(mut file) = file_mutex.lock() {
+                let _ = writeln!(file, "{}", msg);
+                let _ = file.flush();
+            }
+        }
+    }
+
+    fn log_err(&self, msg: &str) {
+        eprintln!("{}", msg);
+        if let Some(ref file_mutex) = self.file {
+            if let Ok(mut file) = file_mutex.lock() {
+                let _ = writeln!(file, "{}", msg);
+                let _ = file.flush();
+            }
+        }
+    }
 }

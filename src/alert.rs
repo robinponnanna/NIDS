@@ -70,7 +70,6 @@ pub struct ProtocolConformantFlood {
     pub signature_description: String,
     pub sender_list: Vec<SenderRate>,
     pub fingerprint_ids: Vec<String>,
-    pub recommended_mitigation: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

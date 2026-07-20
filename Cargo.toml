@@ -1,5 +1,5 @@
 [package]
-name = "Network_IDS"
+name = "network_ids"
 version = "0.3.0"
 edition = "2024"
 

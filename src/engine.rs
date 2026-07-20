@@ -399,12 +399,6 @@ impl StatefulDetectionEngine {
                                     pkt_rate_per_sender: count_to_report as u32,
                                 }],
                                 fingerprint_ids: vec![rule.class.clone()],
-                                recommended_mitigation: match rule.action.as_str() {
-                                    "alert" => "Log alert and monitor host behavior".to_string(),
-                                    "drop" => "Drop offending packets".to_string(),
-                                    "block" => "Quarantine host and block all traffic".to_string(),
-                                    _ => "Monitor host activity".to_string(),
-                                },
                             }),
                         });
                     }
