@@ -331,10 +331,10 @@ impl StatefulDetectionEngine {
             client.last_rssi = rssi;
             client.last_seq_num = seq;
 
-            if let NetworkLayer::Ipv4 { src_ip, .. } = &pkt.network {
-                client.ip_address = Some(std::net::IpAddr::V4(*src_ip));
-            } else if let NetworkLayer::Ipv6 { src_ip, .. } = &pkt.network {
-                client.ip_address = Some(std::net::IpAddr::V6(*src_ip));
+            if let NetworkLayer::Ipv4(ip) = &pkt.network {
+                client.ip_address = Some(std::net::IpAddr::V4(ip.src_ip));
+            } else if let NetworkLayer::Ipv6(ip) = &pkt.network {
+                client.ip_address = Some(std::net::IpAddr::V6(ip.src_ip));
             }
         }
 
@@ -464,32 +464,32 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
 
     // 2. Check IP version & IPs
     match &pkt.network {
-        NetworkLayer::Ipv4 { src_ip, dst_ip, .. } => {
+        NetworkLayer::Ipv4(ip) => {
             if !rule.match_config.ip.ip_version.contains(&4) {
                 return false;
             }
             if rule.match_config.ip.src_ip != "any"
-                && rule.match_config.ip.src_ip != src_ip.to_string()
+                && rule.match_config.ip.src_ip != ip.src_ip.to_string()
             {
                 return false;
             }
             if rule.match_config.ip.dst_ip != "any"
-                && rule.match_config.ip.dst_ip != dst_ip.to_string()
+                && rule.match_config.ip.dst_ip != ip.dst_ip.to_string()
             {
                 return false;
             }
         }
-        NetworkLayer::Ipv6 { src_ip, dst_ip, .. } => {
+        NetworkLayer::Ipv6(ip) => {
             if !rule.match_config.ip.ip_version.contains(&6) {
                 return false;
             }
             if rule.match_config.ip.src_ip != "any"
-                && rule.match_config.ip.src_ip != src_ip.to_string()
+                && rule.match_config.ip.src_ip != ip.src_ip.to_string()
             {
                 return false;
             }
             if rule.match_config.ip.dst_ip != "any"
-                && rule.match_config.ip.dst_ip != dst_ip.to_string()
+                && rule.match_config.ip.dst_ip != ip.dst_ip.to_string()
             {
                 return false;
             }
@@ -529,12 +529,12 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
             }
         }
         "tcp" => {
-            if let TransportLayer::Tcp { .. } = &pkt.transport {
+            if let TransportLayer::Tcp(_) = &pkt.transport {
                 matched = true;
             }
         }
         "udp" => {
-            if let TransportLayer::Udp { .. } = &pkt.transport {
+            if let TransportLayer::Udp(_) = &pkt.transport {
                 matched = true;
             }
         }
@@ -558,40 +558,37 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
                     }
                 }
                 "tcp" => {
-                    if let TransportLayer::Tcp { .. } = &pkt.transport {
+                    if let TransportLayer::Tcp(_) = &pkt.transport {
                         matched = true;
                         break;
                     }
                 }
                 "udp" => {
-                    if let TransportLayer::Udp { .. } = &pkt.transport {
+                    if let TransportLayer::Udp(_) = &pkt.transport {
                         matched = true;
                         break;
                     }
                 }
                 "http" | "https" | "ssh" | "rdp" | "smb" | "ftp" => {
-                    if let TransportLayer::Tcp {
-                        src_port, dst_port, ..
-                    } = &pkt.transport
-                    {
+                    if let TransportLayer::Tcp(tcp) = &pkt.transport {
                         let is_proto_port = match proto.to_lowercase().as_str() {
                             "http" => {
-                                *src_port == 80
-                                    || *src_port == 8080
-                                    || *src_port == 8081
-                                    || *dst_port == 80
-                                    || *dst_port == 8080
-                                    || *dst_port == 8081
+                                tcp.src_port == 80
+                                    || tcp.src_port == 8080
+                                    || tcp.src_port == 8081
+                                    || tcp.dst_port == 80
+                                    || tcp.dst_port == 8080
+                                    || tcp.dst_port == 8081
                             }
-                            "https" => *src_port == 443 || *dst_port == 443,
-                            "ssh" => *src_port == 22 || *dst_port == 22,
-                            "rdp" => *src_port == 3389 || *dst_port == 3389,
-                            "smb" => *src_port == 445 || *dst_port == 445,
+                            "https" => tcp.src_port == 443 || tcp.dst_port == 443,
+                            "ssh" => tcp.src_port == 22 || tcp.dst_port == 22,
+                            "rdp" => tcp.src_port == 3389 || tcp.dst_port == 3389,
+                            "smb" => tcp.src_port == 445 || tcp.dst_port == 445,
                             "ftp" => {
-                                *src_port == 20
-                                    || *src_port == 21
-                                    || *dst_port == 20
-                                    || *dst_port == 21
+                                tcp.src_port == 20
+                                    || tcp.src_port == 21
+                                    || tcp.dst_port == 20
+                                    || tcp.dst_port == 21
                             }
                             _ => false,
                         };
@@ -615,19 +612,24 @@ fn matches_rule(rule: &EvaluatedRule, pkt: &ParsedPacket, iface: &str) -> bool {
     }
 
     // 4. Check specific source and destination ports
-    if let TransportLayer::Tcp {
-        src_port, dst_port, ..
-    }
-    | TransportLayer::Udp {
-        src_port, dst_port, ..
-    } = &pkt.transport
-    {
-        if !port_matches(&rule.match_config.transport.src_port, *src_port) {
-            return false;
+    match &pkt.transport {
+        TransportLayer::Tcp(tcp) => {
+            if !port_matches(&rule.match_config.transport.src_port, tcp.src_port) {
+                return false;
+            }
+            if !port_matches(&rule.match_config.transport.dst_port, tcp.dst_port) {
+                return false;
+            }
         }
-        if !port_matches(&rule.match_config.transport.dst_port, *dst_port) {
-            return false;
+        TransportLayer::Udp(udp) => {
+            if !port_matches(&rule.match_config.transport.src_port, udp.src_port) {
+                return false;
+            }
+            if !port_matches(&rule.match_config.transport.dst_port, udp.dst_port) {
+                return false;
+            }
         }
+        _ => {}
     }
 
     true

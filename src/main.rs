@@ -135,19 +135,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 // 1. Zero-copy extract packets from the block, pre-parse ports, and add to locality buffer
                 for raw_pkt in block_guard.packets() {
-                    let parsed = parser::parse_packet(raw_pkt.data, default_link);
+                    let parsed = parser::parse_packet(raw_pkt.data, default_link, None);
 
                     let mut port_key = 0u16;
                     match &parsed.transport {
-                        parser::TransportLayer::Tcp {
-                            src_port, dst_port, ..
-                        } => {
-                            port_key = std::cmp::min(*src_port, *dst_port);
+                        parser::TransportLayer::Tcp(tcp) => {
+                            port_key = std::cmp::min(tcp.src_port, tcp.dst_port);
                         }
-                        parser::TransportLayer::Udp {
-                            src_port, dst_port, ..
-                        } => {
-                            port_key = std::cmp::min(*src_port, *dst_port);
+                        parser::TransportLayer::Udp(udp) => {
+                            port_key = std::cmp::min(udp.src_port, udp.dst_port);
                         }
                         _ => {}
                     }
@@ -174,7 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let raw_slice = unsafe {
                             slice::from_raw_parts(pkt_ref.data_ptr, pkt_ref.len as usize)
                         };
-                        let parsed = parser::parse_packet(raw_slice, default_link);
+                        let parsed = parser::parse_packet(raw_slice, default_link, None);
 
                         let timestamp =
                             pkt_ref.sec as f64 + (pkt_ref.nsec as f64 / 1_000_000_000.0);
