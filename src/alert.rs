@@ -69,7 +69,6 @@ pub struct ProtocolConformantFlood {
     pub packet_signature_hash: String,
     pub signature_description: String,
     pub sender_list: Vec<SenderRate>,
-    pub fingerprint_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
