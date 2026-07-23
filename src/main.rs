@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Local::now()
                 ));
                 logger_capture.log_err(
-                    "[Info] Running in simulation fallback mode. Real traffic will not be monitored."
+                    "[Info] Running in simulation fallback mode. Real traffic will not be monitored. "
                 );
                 // Fall loop: park the thread
                 while is_running_clone.load(Ordering::Relaxed) {
