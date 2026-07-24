@@ -152,15 +152,14 @@
     },
     "rule4": {
         "id": 4,
-        "enabled": false,
+        "enabled": true,
         "action": "alert",
         "message": "UDP Port Scan",
         "class": "udp",
         "severity": 2,
         "scope": {
             "interfaces": [
-                "eth0",
-                "wlan0"
+                "any"
             ]
         },
         "match": {
@@ -174,12 +173,12 @@
             },
             "transport": {
                 "protocol": [
-                    "tcp"
+                    "udp"
                 ],
                 "src_port": "any",
                 "dst_port": "any"
             },
-            "direction": "any"
+            "direction": "ingress"
         },
         "context": {
             "flow": {
@@ -190,6 +189,54 @@
                     "per": "src_ip",
                     "connections": 15,
                     "interval": 1.0
+                }
+            }
+        },
+        "behaviour": {
+            "per_src": {
+                "max_requests_per_second": 600
+            }
+        }
+    },
+    "rule5": {
+        "id": 5,
+        "enabled": true,
+        "action": "alert",
+        "message": "ARP Scan",
+        "class": "arp",
+        "severity": 2,
+        "scope": {
+            "interfaces": [
+                "any"
+            ]
+        },
+        "match": {
+            "ip": {
+                "src_ip": "any",
+                "dst_ip": "any",
+                "ip_version": [
+                    4,
+                    6
+                ]
+            },
+            "transport": {
+                "protocol": [
+                    "arp"
+                ],
+                "src_port": "any",
+                "dst_port": "any"
+            },
+            "direction": "ingress"
+        },
+        "context": {
+            "flow": {
+                "state": "any"
+            },
+            "limits": {
+                "max_conn_rate": {
+                    "per": "src_ip",
+                    "connections": 5,
+                    "interval": 3.0
                 }
             }
         },
