@@ -3,12 +3,12 @@
 
 ---
 
-**Document ID:** SPEC-AUTO-NIDS-001
-**Classification:** Technical / Architectural Specification
-**Software Version:** 0.3.0 (Targeting Automotive Grade Linux / AUTOSAR Adaptive Platform)
-**Applicable Standards:** UN ECE R155, UN ECE R156, ISO/SAE 21434:2021, AUTOSAR IDSM (FO R20-11 / AP R21-11), ISO 26262:2018 (FFI / ASIL-B Decomposed), ASPICE SWE.2 / SWE.3
-**Target Hardware Architectures:** ARM Cortex-A53 / A72 (NXP S32G2/G3, Renesas R-Car H3/M3, TI Jacinto 7, Qualcomm Snapdragon Digital Chassis, ST Teleaco)
-**Language & Runtime:** Safe High-Integrity Systems Rust (Edition 2024, Zero-Allocation Hot Path)
+- **Document ID:** SPEC-AUTO-NIDS-001
+- **Classification:** Technical / Architectural Specification
+- **Software Version:** 0.3.0 (Targeting Automotive Grade Linux / AUTOSAR Adaptive Platform)
+- **Applicable Standards:** UN ECE R155, UN ECE R156, ISO/SAE 21434:2021, AUTOSAR IDSM (FO R20-11 / AP R21-11), ISO 26262:2018 (FFI / ASIL-B Decomposed), ASPICE SWE.2 / SWE.3
+- **Target Hardware Architectures:** ARM Cortex-A53 / A72 (NXP S32G2/G3, Renesas R-Car H3/M3, TI Jacinto 7, Qualcomm Snapdragon Digital Chassis, ST Teleaco)
+- **Language & Runtime:** Safe High-Integrity Systems Rust (Edition 2024, Zero-Allocation Hot Path)
 
 ---
 
