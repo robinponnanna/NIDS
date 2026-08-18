@@ -22,6 +22,79 @@ The sensor acts as a distributed **IdsSensor** within the **AUTOSAR Intrusion De
 
 ---
 
+## High-Level End-to-End Execution Flowchart
+
+```mermaid
+flowchart TD
+
+    Start(["Application Start: main.rs"])
+    ParseArgs["Parse CLI Arguments & Configuration<br/>--interface, --ip, --port, --log"]
+    InitLogger["Initialize Thread-Safe File & Console Logger"]
+    DetectLink["Detect Interface Link Layer Type<br/>Ethernet / 802.11 / Radiotap / Auto"]
+    InitChannel["Create MPSC Alert Channel<br/>tx_alerts, rx_alerts"]
+    SpawnCapture["Spawn Background Capture & Engine Thread"]
+
+    Start --> ParseArgs
+    ParseArgs --> InitLogger
+    InitLogger --> DetectLink
+    DetectLink --> InitChannel
+    InitChannel --> SpawnCapture
+
+    subgraph CaptureThread ["Background Capture & Processing Thread (Real-Time Hot Path)"]
+        InitSocket["Initialize MmapCapture Socket<br/>AF_PACKET / TPACKET_V3 Ring Buffer"]
+        AllocBuffers["Pre-allocate LocalityBuffer & StatefulEngine<br/>Zero-Allocation Hot Path"]
+        SimFallback["Log Warning & Enter Fallback Loop"]
+        PollLoop{"Poll Next Block<br/>TPACKET_V3 Retired Block?"}
+        AcquireBlock["Acquire BlockGuard<br/>Borrowing byte slices directly from mmap ring"]
+        ExtractPkts["Zero-Copy Packet Extraction<br/>Calculate Port Keys: min_src_dst_port"]
+        GroupSort["LocalityBuffer: Counting Sort Grouping<br/>O(N) Cache-Aligned Grouping"]
+        StreamIter["Iterate Grouped Packet Slices<br/>Cache-Friendly Sequential Traversal"]
+        DeepParse["Zero-Copy Multi-Layer Parser<br/>Ethernet / Radiotap / 802.11 / IP / TCP / UDP / DNS / EAPOL"]
+        StatefulEngine["Stateful Detection Engine<br/>State Update, Rate Tracking, Rules Evaluation"]
+        GenAlerts{"Alerts Triggered?"}
+        PushMpsc["Send IdsmMessage via tx_alerts"]
+        NextPkt["Continue Next Packet"]
+        RecycleBlock["Drop BlockGuard<br/>Recycle Block: TP_STATUS_KERNEL"]
+
+        InitSocket -->|Success| AllocBuffers
+        InitSocket -->|Failure / Perm Denied| SimFallback
+        AllocBuffers --> PollLoop
+        PollLoop -->|Timeout / No Data| PollLoop
+        PollLoop -->|Block Available| AcquireBlock
+        AcquireBlock --> ExtractPkts
+        ExtractPkts --> GroupSort
+        GroupSort --> StreamIter
+        StreamIter --> DeepParse
+        DeepParse --> StatefulEngine
+        StatefulEngine --> GenAlerts
+        GenAlerts -->|Yes| PushMpsc
+        GenAlerts -->|No| NextPkt
+        PushMpsc --> NextPkt
+        NextPkt --> RecycleBlock
+        RecycleBlock --> PollLoop
+    end
+
+    SpawnCapture --> InitSocket
+    PushMpsc -.->|Channel Transfer| AlertLoop
+
+    subgraph MainConsumerThread ["Main Thread Alert & Telemetry Pipeline"]
+        InitForwarder["Initialize AlertForwarder<br/>TCP Stream with UDP Auto-Fallback"]
+        AlertLoop{"Receive IdsmMessage<br/>rx_alerts.recv()"}
+        SerializeJSON["Serialize IdsmMessage to JSON"]
+        WriteLog["Write to File & Print to Console"]
+        ForwardNet["Forward via TCP/UDP to SIEM / IDSM Backend"]
+
+        InitForwarder --> AlertLoop
+        AlertLoop -->|New Alert| SerializeJSON
+        SerializeJSON --> WriteLog
+        WriteLog --> ForwardNet
+        ForwardNet --> AlertLoop
+    end
+
+    SpawnCapture --> InitForwarder
+```
+
+
 ## 1. Regulatory Framework & Automotive Standards Compliance Matrix
 
 The NIDS Sensor is architected from the ground up to satisfy stringent international automotive cybersecurity regulations and engineering frameworks:
