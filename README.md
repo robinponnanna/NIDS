@@ -19,27 +19,27 @@ flowchart TD
 
 The system is organized into the following main components:
 
-1. **High-Performance Capture ([capture.rs](file:///home/robin/Projects/sensors/WIFI-sensor/src/capture.rs))**:
+1. **High-Performance Capture ([capture.rs](file:///home/robin/Projects/sensors/Network_IDS/src/capture.rs))**:
    Uses raw Linux packet sockets (`AF_PACKET`, `SOCK_RAW`) bound with `PACKET_RX_RING` utilizing `TPACKET_V3` ring buffers. This maps kernel memory directly into user-space via `mmap`, avoiding context switch and copy overheads. If the socket cannot be created (due to permissions or platform limitations), the system automatically falls back to **Simulation Mode** (allowing testing without raw socket access).
 
-2. **Zero-Copy Layered Parser ([parser.rs](file:///home/robin/Projects/sensors/WIFI-sensor/src/parser.rs))**:
+2. **Zero-Copy Layered Parser ([parser.rs](file:///home/robin/Projects/sensors/Network_IDS/src/parser.rs))**:
    Recursively decodes link, network, transport, and application layers. It borrows sub-slices directly from the mmap buffer (`&[u8]`) to parse packet details without any heap allocation on the critical path.
    - **Link Layers**: Ethernet, IEEE 802.11 Wi-Fi, Radiotap (signal strength/RSSI, channel).
    - **Network Layers**: IPv4, IPv6, ARP.
    - **Transport Layers**: TCP (ports, sequence numbers, SYN/ACK flags), UDP, ICMP (types/codes).
    - **Application Layers**: DNS (subdomain queries), DHCP, EAPOL (handshake packets).
 
-3. **Locality Buffer Grouping ([locality.rs](file:///home/robin/Projects/sensors/WIFI-sensor/src/locality.rs))**:
+3. **Locality Buffer Grouping ([locality.rs](file:///home/robin/Projects/sensors/Network_IDS/src/locality.rs))**:
    Groups batches of up to 4096 packets by destination/source port in $O(N)$ time using a cache-aligned counting sort algorithm. This contiguous layout maximizes CPU L2/L3 cache hit rates when the stateful engine processes related traffic streams sequentially.
 
-4. **Stateful Detection Engine ([engine.rs](file:///home/robin/Projects/sensors/WIFI-sensor/src/engine.rs))**:
+4. **Stateful Detection Engine ([engine.rs](file:///home/robin/Projects/sensors/Network_IDS/src/engine.rs))**:
    Monitors network activity across a sliding correlation window (typically 60 seconds) to detect anomalous behaviors. It tracks access points, client metadata states, EAPOL handshake progression, and IP-level patterns.
 
-5. **IDSM Alert Compression ([alert.rs](file:///home/robin/Projects/sensors/WIFI-sensor/src/alert.rs))**:
-   Emulates an automotive Intrusion Detection System Manager (IDSM) payload. Serializes security alert details (including the offending packet sequence summaries) into JSON, then compresses the payload using Zlib compression (`flate2`) to save network transmission bandwidth, calculating and displaying the compression ratios in real-time.
+5. **IDSM Alert Compression & Telemetry ([alert.rs](file:///home/robin/Projects/sensors/Network_IDS/src/alert.rs))**:
+   Emulates an automotive Intrusion Detection System Manager (IDSM) payload. Serializes security alert details (including the offending packet sequence summaries) into JSON, ready for forwarding to onboard IDSM and Cloud VSOC backends.
 
-6. **TUI Dashboard ([dashboard.rs](file:///home/robin/Projects/sensors/WIFI-sensor/src/dashboard.rs))**:
-   An interactive Terminal User Interface driven by `ratatui` and `crossterm`. Features multiple tables and scrolling paragraph panes to inspect raw metrics, alert timelines, hexadecimal dumps of IDSM compressed alerts, and structured JSON logs.
+> [!NOTE]
+> For the comprehensive automotive industry compliance and technical design specification conforming to **UN ECE R155**, **ISO/SAE 21434**, **AUTOSAR IDSM**, and **ISO 26262 FFI**, please refer to [AUTOMOTIVE_NIDS_TECHNICAL_SPECIFICATION.md](file:///home/robin/Projects/sensors/Network_IDS/docs/AUTOMOTIVE_NIDS_TECHNICAL_SPECIFICATION.md).
 
 ---
 
