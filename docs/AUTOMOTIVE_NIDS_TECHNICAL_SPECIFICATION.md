@@ -3,18 +3,18 @@
 
 ---
 
-**Document ID:** SPEC-AUTO-NIDS-001  
-**Classification:** Technical / Architectural Specification  
-**Software Version:** 0.3.0 (Targeting Automotive Grade Linux / AUTOSAR Adaptive Platform)  
-**Applicable Standards:** UN ECE R155, UN ECE R156, ISO/SAE 21434:2021, AUTOSAR IDSM (FO R20-11 / AP R21-11), ISO 26262:2018 (FFI / ASIL-B Decomposed), ASPICE SWE.2 / SWE.3  
-**Target Hardware Architectures:** ARM Cortex-A53 / A72 (NXP S32G2/G3, Renesas R-Car H3/M3, TI Jacinto 7, Qualcomm Snapdragon Digital Chassis, ST Teleaco)  
+**Document ID:** SPEC-AUTO-NIDS-001
+**Classification:** Technical / Architectural Specification
+**Software Version:** 0.3.0 (Targeting Automotive Grade Linux / AUTOSAR Adaptive Platform)
+**Applicable Standards:** UN ECE R155, UN ECE R156, ISO/SAE 21434:2021, AUTOSAR IDSM (FO R20-11 / AP R21-11), ISO 26262:2018 (FFI / ASIL-B Decomposed), ASPICE SWE.2 / SWE.3
+**Target Hardware Architectures:** ARM Cortex-A53 / A72 (NXP S32G2/G3, Renesas R-Car H3/M3, TI Jacinto 7, Qualcomm Snapdragon Digital Chassis, ST Teleaco)
 **Language & Runtime:** Safe High-Integrity Systems Rust (Edition 2024, Zero-Allocation Hot Path)
 
 ---
 
 ## Executive Summary & System Intent
 
-Modern Software-Defined Vehicles (SDVs) integrate high-bandwidth external interfaces (V2X, 5G Telematics, In-Vehicle Wi-Fi 802.11ac/ax, Bluetooth 5.x) and high-speed in-vehicle networking backbones (100BASE-T1 / 1000BASE-T1 Automotive Ethernet, SOME/IP, Diagnostics over IP - ISO 13400 DoIP). These interfaces substantially expand the vehicle attack surface. 
+Modern Software-Defined Vehicles (SDVs) integrate high-bandwidth external interfaces (V2X, 5G Telematics, In-Vehicle Wi-Fi 802.11ac/ax, Bluetooth 5.x) and high-speed in-vehicle networking backbones (100BASE-T1 / 1000BASE-T1 Automotive Ethernet, SOME/IP, Diagnostics over IP - ISO 13400 DoIP). These interfaces substantially expand the vehicle attack surface.
 
 This document specifies the **Automotive Network Intrusion Detection System (NIDS) Sensor**, a high-performance, deterministic, zero-copy embedded network security sensor. The sensor is engineered to operate on resource-constrained automotive Electronic Control Units (ECUs), Central Gateways (CGW), Telematics Control Units (TCU), and In-Vehicle Infotainment (IVI) Domain Controllers with negligible CPU load (<2.5% single-core on Cortex-A53 at 100 Mbps line rate) and a fixed, deterministic memory footprint (<10 MB RSS).
 
@@ -26,15 +26,13 @@ The sensor acts as a distributed **IdsSensor** within the **AUTOSAR Intrusion De
 
 The NIDS Sensor is architected from the ground up to satisfy stringent international automotive cybersecurity regulations and engineering frameworks:
 
-| Standard / Regulation | Requirement / Clause | Sensor Implementation & Conformance Mechanism |
-| :--- | :--- | :--- |
-| **UN ECE R155** | §7.2.2.2 (Threat Mitigation), Annex 5 Part A/B (Mitigations for cyber-attacks against vehicle communication channels) | Implements continuous, autonomous packet inspection on external/internal interfaces to detect unauthorized intrusion, port scanning, DoS/DDoS, ARP spoofing, rogue APs, and protocol tampering. |
-| **UN ECE R156** | §7.1 (SUMS - Software Updates & Integrity) | Modular, deterministic sensor architecture supporting secure Over-The-Air (OTA) rule definitions updates (`rules.json`) verified via cryptographic hash verification. |
-| **ISO/SAE 21434:2021** | Clause 9 (Concept Phase), Clause 10 (Product Development), Clause 13 (Operations & Incident Response) | Maps to vehicle Threat Analysis and Risk Assessment (TARA). Serves as the primary operational telemetry sensor feeding forensic event logs (`IdsmMessage`) to VSOC incident response pipelines. |
-| **AUTOSAR IDSM** (Adaptive / Classic) | AUTOSAR SWS IDSM (Specification of Intrusion Detection System Manager) | Implements standardized IdsM Security Event (SEv) reporting formats, qualified event classification (QSEv), timestamping, source attribution, and rate-limited upstream forwarding. |
-| **ISO 26262:2018** | Part 6 (Product Development at the Software Level), Annex D (Freedom from Interference - FFI) | Spatial and temporal isolation: Zero heap allocation in hot packet-processing loops, bounded correlation windows, deterministic execution time, non-blocking asynchronous socket I/O, preventing interference with safety-critical ECUs (ASIL-B/D). |
-| **ASPICE PAM 3.1 / 4.0** | SWE.2 (Software Architectural Design), SWE.3 (Software Detailed Design & Unit Construction) | Formally structured modular software units ([capture.rs](file://src/capture.rs), [parser.rs](file://src/parser.rs), [locality.rs](file://src/locality.rs), [engine.rs](file://src/engine.rs), [alert.rs](file://src/alert.rs)) with bidirectional traceability to requirements. |
-| **High-Integrity Rust** | MISRA Rust / Ferrocene Safety Guidelines | Safe Rust memory guarantees: Eliminates buffer overflows, double-frees, null-pointer dereferences, data races, and use-after-free vulnerabilities without a runtime garbage collector. |
+| Standard / Regulation                 | Requirement / Clause                                                                                  | Sensor Implementation & Conformance Mechanism                                                                                                                                                                                                       |
+| :------------------------------------ | :---------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ISO/SAE 21434:2021**                | Clause 9 (Concept Phase), Clause 10 (Product Development), Clause 13 (Operations & Incident Response) | Maps to vehicle Threat Analysis and Risk Assessment (TARA). Serves as the primary operational telemetry sensor feeding forensic event logs (`IdsmMessage`) to VSOC incident response pipelines.                                                     |
+| **AUTOSAR IDSM** (Adaptive / Classic) | AUTOSAR SWS IDSM (Specification of Intrusion Detection System Manager)                                | Implements standardized IdsM Security Event (SEv) reporting formats, qualified event classification (QSEv), timestamping, source attribution, and rate-limited upstream forwarding.                                                                 |
+| **ISO 26262:2018**                    | Part 6 (Product Development at the Software Level), Annex D (Freedom from Interference - FFI)         | Spatial and temporal isolation: Zero heap allocation in hot packet-processing loops, bounded correlation windows, deterministic execution time, non-blocking asynchronous socket I/O, preventing interference with safety-critical ECUs (ASIL-B/D). |
+| **ASPICE PAM 3.1 / 4.0**              | SWE.2 (Software Architectural Design), SWE.3 (Software Detailed Design & Unit Construction)           | Formally structured modular software units ([capture.rs](src/capture.rs), [parser.rs](src/parser.rs), [locality.rs](src/locality.rs), [engine.rs](src/engine.rs), [alert.rs](src/alert.rs)) with bidirectional traceability to requirements.        |
+| **High-Integrity Rust**               | MISRA Rust / Ferrocene Safety Guidelines                                                              | Safe Rust memory guarantees: Eliminates buffer overflows, double-frees, null-pointer dereferences, data races, and use-after-free vulnerabilities without a runtime garbage collector.                                                              |
 
 ---
 
@@ -43,51 +41,52 @@ The NIDS Sensor is architected from the ground up to satisfy stringent internati
 The NIDS Sensor is deployable across multiple automotive ECU classes within the E/E (Electrical/Electronic) Architecture:
 
 ```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
 flowchart TB
-    subgraph External_Interfaces [External Communication Interfaces]
-        V2X[V2X / C-V2X 802.11p / C-V2X]
-        CEL[5G/LTE Cellular Telematics]
-        WIFI[In-Vehicle Wi-Fi 802.11ac/ax Hotspot]
-        OBD[OBD-II / Diagnostic Port]
+    subgraph External_Interfaces ["External Communication Interfaces"]
+        V2X["V2X / C-V2X 802.11p / C-V2X"]
+        CEL["5G/LTE Cellular Telematics"]
+        WIFI["In-Vehicle Wi-Fi 802.11ac/ax Hotspot"]
+        OBD["OBD-II / Diagnostic Port"]
     end
 
-    subgraph Domain_Controllers [Automotive Domain Controllers & Gateways]
-        subgraph TCU_Node [Telematics Control Unit (TCU) / Gateway]
-            NIDS1[Embedded NIDS Sensor Node 1]
-            TCU_LINUX[Linux / QNX / POSIX OS]
+    subgraph Domain_Controllers ["Automotive Domain Controllers & Gateways"]
+        subgraph TCU_Node ["Telematics Control Unit (TCU) / Gateway"]
+            NIDS1["Embedded NIDS Sensor Node 1"]
+            TCU_LINUX["Linux / QNX / POSIX OS"]
         end
 
-        subgraph IVI_Node [In-Vehicle Infotainment (IVI) Domain]
-            NIDS2[Embedded NIDS Sensor Node 2]
-            IVI_OS[Android Automotive / AGL]
+        subgraph IVI_Node ["In-Vehicle Infotainment (IVI) Domain"]
+            NIDS2["Embedded NIDS Sensor Node 2"]
+            IVI_OS["Android Automotive / AGL"]
         end
 
-        subgraph CGW_Node [Central Gateway (CGW) / HPC]
-            NIDS3[Embedded NIDS Sensor Node 3]
-            AUTOSAR_AP[AUTOSAR Adaptive Platform]
+        subgraph CGW_Node ["Central Gateway (CGW) / HPC"]
+            NIDS3["Embedded NIDS Sensor Node 3"]
+            AUTOSAR_AP["AUTOSAR Adaptive Platform"]
         end
     end
 
-    subgraph InVehicle_Buses [In-Vehicle Bus Infrastructure]
-        ETH_TSN[100/1000BASE-T1 Automotive Ethernet TSN]
-        CAN_FD[CAN-FD / CAN XL Sub-Buses]
+    subgraph InVehicle_Buses ["In-Vehicle Bus Infrastructure"]
+        ETH_TSN["100/1000BASE-T1 Automotive Ethernet TSN"]
+        CAN_FD["CAN-FD / CAN XL Sub-Buses"]
     end
 
-    subgraph Security_Backend [Vehicle Security Management]
-        IDSM_CORE[Onboard AUTOSAR IDSM Core / Aggregator]
-        SEC_STORAGE[Hardware Security Module / Secure Flash]
-        VSOC[Offboard Cloud VSOC / SIEM]
+    subgraph Security_Backend ["Vehicle Security Management"]
+        IDSM_CORE["Onboard AUTOSAR IDSM Core / Aggregator"]
+        SEC_STORAGE["Hardware Security Module / Secure Flash"]
+        VSOC["Offboard Cloud VSOC / SIEM"]
     end
 
-    V2X --> TCU_Node
-    CEL --> TCU_Node
-    WIFI --> IVI_Node
-    OBD --> CGW_Node
+    V2X --> TCU_LINUX
+    CEL --> TCU_LINUX
+    WIFI --> IVI_OS
+    OBD --> AUTOSAR_AP
 
-    TCU_Node <--> ETH_TSN
-    IVI_Node <--> ETH_TSN
-    CGW_Node <--> ETH_TSN
-    CGW_Node <--> CAN_FD
+    TCU_LINUX <--> ETH_TSN
+    IVI_OS <--> ETH_TSN
+    AUTOSAR_AP <--> ETH_TSN
+    AUTOSAR_AP <--> CAN_FD
 
     NIDS1 -->|IDSM Alert Stream| IDSM_CORE
     NIDS2 -->|IDSM Alert Stream| IDSM_CORE
@@ -104,41 +103,42 @@ flowchart TB
 The NIDS Sensor implements a 5-stage deterministic pipeline. Data moves from the network physical layer (PHY) to the intrusion detection alert dispatcher without duplicate memory buffers or runtime heap allocation:
 
 ```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
 flowchart LR
-    subgraph Stage1 [1. Packet Acquisition]
-        NIC[Ethernet / Wi-Fi NIC Driver]
-        DMA[Kernel DMA Ring]
-        MMAP[Linux PACKET_MMAP TPACKET_V3]
+    subgraph Stage1 ["1. Packet Acquisition"]
+        NIC["Ethernet / Wi-Fi NIC Driver"]
+        DMA["Kernel DMA Ring"]
+        MMAP["Linux PACKET_MMAP TPACKET_V3"]
         DMA -->|Zero-Copy| MMAP
     end
 
-    subgraph Stage2 [2. Zero-Copy Parser]
-        PARSER[Recursive Multi-Protocol Parser]
-        SLICES[&[u8] Lifetimed Sub-slices]
+    subgraph Stage2 ["2. Zero-Copy Parser"]
+        PARSER["Recursive Multi-Protocol Parser"]
+        SLICES["&[u8] Lifetimed Sub-slices"]
         MMAP -->|Borrow Pointer| PARSER
         PARSER --> SLICES
     end
 
-    subgraph Stage3 [3. Locality Grouping]
-        LOC_BUF[Cache-Aligned Locality Buffer]
-        CSORT[O(N) Counting Sort by Port Key]
+    subgraph Stage3 ["3. Locality Grouping"]
+        LOC_BUF["Cache-Aligned Locality Buffer"]
+        CSORT["O(N) Counting Sort by Port Key"]
         SLICES --> LOC_BUF
         LOC_BUF --> CSORT
     end
 
-    subgraph Stage4 [4. Stateful Detection Engine]
-        ENGINE[Stateful Detection Engine]
-        RULES[Dynamic Rules Evaluator]
-        STATE_TRACK[TCP / AP / Client State Machines]
+    subgraph Stage4 ["4. Stateful Detection Engine"]
+        ENGINE["Stateful Detection Engine"]
+        RULES["Dynamic Rules Evaluator"]
+        STATE_TRACK["TCP / AP / Client State Machines"]
         CSORT --> ENGINE
         RULES <--> ENGINE
         STATE_TRACK <--> ENGINE
     end
 
-    subgraph Stage5 [5. IDSM Telemetry]
-        ALERT_GEN[IDSM Message Serialization]
-        COMPRESS[Zlib / Deflate Compression]
-        FORWARD[Deterministic UDP/TCP Forwarder]
+    subgraph Stage5 ["5. IDSM Telemetry"]
+        ALERT_GEN["IDSM Message Serialization"]
+        COMPRESS["Zlib / Deflate Compression"]
+        FORWARD["Deterministic UDP/TCP Forwarder"]
         ENGINE -->|Security Event| ALERT_GEN
         ALERT_GEN --> COMPRESS
         COMPRESS --> FORWARD
@@ -153,7 +153,7 @@ Automotive ECUs operate under strict thermal envelopes, low power budgets (milli
 
 ### 4.1. Kernel-to-Userland Zero-Copy via `PACKET_MMAP` (`TPACKET_V3`)
 Traditional packet capture (`libpcap`, standard `AF_PACKET` with `recv()`/`read()`) induces severe overhead:
-1. Every packet triggers a kernel-to-userland context switch ($~1.5\,\mu\text{s}$ penalty).
+1. Every packet triggers a kernel-to-userland context switch (`~1.5 µs` penalty).
 2. Every packet triggers a memory copy from kernel socket buffers (`sk_buff`) to userland buffers.
 3. System call interrupt thrashing degrades real-time execution of co-located ECU threads.
 
@@ -170,21 +170,18 @@ Traditional packet capture (`libpcap`, standard `AF_PACKET` with `recv()`/`read(
 - Payloads and byte sequences are represented strictly as borrowed sub-slices (`&'a [u8]`) pointing directly into the mapped memory block.
 - Zero heap allocations (`malloc`/`calloc`) occur on the hot parsing path.
 
-### 4.3. 64-Byte Cache-Aligned Locality Buffer with $O(N)$ Counting Sort (`locality.rs`)
-In multi-stream network traffic, packet processing order is randomized across different flows, thrashing CPU L1 Data ($32\,\text{KB}$) and L2 ($512\,\text{KB}$) caches as state tables for disparate connections are loaded and evicted repeatedly.
+### 4.3. 64-Byte Cache-Aligned Locality Buffer with `O(N)` Counting Sort (`locality.rs`)
+In multi-stream network traffic, packet processing order is randomized across different flows, thrashing CPU L1 Data (`32 KB`) and L2 (`512 KB`) caches as state tables for disparate connections are loaded and evicted repeatedly.
 
 **NIDS Sensor Locality Architecture:**
-```
-+-----------------------------------------------------------------------------+
-|  LocalityBuffer (64-byte Cache Aligned) - Total Static Footprint: ~600 KB   |
-+-----------------------------------------------------------------------------+
-|  input_refs:   [PacketRef; 4096]   (Compact 24-byte struct per packet)      |
-|  sorted_refs:  [PacketRef; 4096]   (Contiguously grouped by Port Key)       |
-|  counts:       [u16; 65536]        (Frequency table for all 16-bit ports)   |
-|  offsets:      [u16; 65536]        (Prefix sum memory offsets)              |
-|  active_buckets: [u16; 4096]       (Dense list of ports active in batch)    |
-+-----------------------------------------------------------------------------+
-```
+|**LocalityBuffer component**|**Type / capacity**|**Purpose**|
+|---|---|---|
+|`input_refs`|`[PacketRef; 4096]`|Compact packet references|
+|`sorted_refs`|`[PacketRef; 4096]`|Contiguously grouped by port key|
+|`counts`|`[u16; 65536]`|Frequency table for all 16-bit ports|
+|`offsets`|`[u16; 65536]`|Prefix-sum memory offsets|
+|`active_buckets`|`[u16; 4096]`|Dense list of ports active in the batch|
+|**Total static footprint**|**~600 KB**|64-byte cache-aligned locality buffer|
 
 1. **Compact 24-Byte `PacketRef` Structure:**
    ```rust
@@ -198,15 +195,15 @@ In multi-stream network traffic, packet processing order is randomized across di
        pub port_key: u16,        // min(src_port, dst_port) (2 bytes + 2 padding)
    }
    ```
-2. **Linear-Time $O(N)$ Counting Sort:** Sorts batches of up to 4,096 packets by port in a single pass without pointer chasing or comparison-based $O(N \log N)$ branch penalties.
-3. **$O(K)$ Active Bucket Recycling:** Standard counting sort requires clearing all 65,536 count buckets ($O(65536)$ per batch). The sensor tracks active port indices in an `active_buckets` array, clearing only the $K$ active buckets ($K \le 4096$), saving $>93\%$ of clearing cycles per batch.
+2. **Linear-Time `O(N)` Counting Sort:** Sorts batches of up to 4,096 packets by port in a single pass without pointer chasing or comparison-based `O(N log N)` branch penalties.
+3. **`O(K)` Active Bucket Recycling:** Standard counting sort requires clearing all 65,536 count buckets ($O(65536)$ per batch). The sensor tracks active port indices in an `active_buckets` array, clearing only the $K$ active buckets (`K ≤ 4096`), saving `>93%` of clearing cycles per batch.
 4. **Optimal Spatial & Temporal Locality:** The stateful engine processes contiguous runs of packets belonging to identical ports, keeping connection states hot in the L1/L2 cache and maximizing hardware prefetcher efficiency.
 
 ### 4.4. Fixed-Capacity Memory Tables & Deterministic State Pruning (`engine.rs`)
 Unbounded state tracking in conventional IDS tools (e.g. Snort, Zeek) leads to Out-Of-Memory (OOM) kernel panics when subjected to denial-of-service floods.
 - The NIDS sensor bounds memory via a 60-second sliding correlation window.
 - Pruning runs on a deterministic 5-second tick (`now - last_cleanup_time >= 5.0`).
-- Pruning purges stale client entries, completed TCP sessions, AP beacons, and rate trackers in $O(N)$ linear time.
+- Pruning purges stale client entries, completed TCP sessions, AP beacons, and rate trackers in `O(N)` linear time.
 - Inactive state entries older than 300 seconds are unconditionally reclaimed.
 
 ---
@@ -237,29 +234,31 @@ Unbounded state tracking in conventional IDS tools (e.g. Snort, Zeek) leads to O
 The parser handles recursive layer decoding across automotive communication stacks:
 
 ```mermaid
-graph TD
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
+flowchart TD
     A[Raw Frame Data] --> B{Link Layer}
     B -->|Ethernet 0x0800 / 0x86DD / 0x8100| C[Ethernet Decoder]
     B -->|802.11 Radiotap| D[Radiotap + IEEE 802.11 Frame Decoder]
-    
+
     C -->|802.1Q / 802.1ad QinQ| E[VLAN Stripper & PCP/DEI Extractor]
     E --> F{Network Layer}
-    
+
     F -->|0x0800| G[IPv4 Parser]
     F -->|0x86DD| H[IPv6 Parser & Ext Header Walker]
     F -->|0x0806| I[ARP Parser]
 
     G --> J{Transport Layer}
     H --> J
-    
+
     J -->|Protocol 6| K[TCP Parser: Flags, Options, SACK, TS]
     J -->|Protocol 17| L[UDP Parser]
     J -->|Protocol 1 / 58| M[ICMP / ICMPv6 Parser]
 
     D --> N[Wi-Fi Mgmt: Beacons, Probes, Auth, Assoc, Deauth]
     D --> O[EAPOL 802.1X Key Exchange Parser]
-    
-    K & L --> P{Application Layer}
+
+    K --> P{Application Layer}
+    L --> P
     P -->|Port 53| Q[DNS Decoder: Subdomain, Query Type]
     P -->|Port 67/68| R[DHCP Decoder: Options, Hostname, Lease]
     P -->|EtherType 0x888E| O
@@ -277,6 +276,7 @@ graph TD
 The detection engine combines **Dynamic JSON-Driven Declarative Rules** (`rules.json`) with **Stateful Heuristic Protocol Analyzers**:
 
 ```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
 stateDiagram-v2
     [*] --> New: TCP SYN Observed
     New --> Established: TCP SYN-ACK / Data ACK
@@ -320,7 +320,6 @@ stateDiagram-v2
    - **Deauthentication Flood Detection:** Detects deauth/disassociation bursts ($>10$ frames in 10s) aimed at severing telematics or projection links.
    - **EAPOL Handshake Brute Force & KRACK:** Detects key verification failures and repeated replay counters on Message 3 of the 4-Way handshake.
    - **Security Downgrade:** Alerts if vehicle hotspot shifts from WPA2/WPA3 to Open encryption.
-5. **Automotive Diagnostic API & Infotainment Protection:** Detects unauthorized connections to DoIP (port 13400), firmware OTA endpoints (port 9000), or internal microservices from unauthenticated subnets.
 
 ### 5.4. IDSM Security Event Format & Compression (`alert.rs`)
 
@@ -368,71 +367,48 @@ Security events generated by the NIDS sensor strictly mirror the **AUTOSAR IDSM 
 
 ---
 
-## 6. Threat Coverage Matrix & Attack Mapping
-
-The NIDS sensor provides verified detection coverage across major automotive attack vectors defined in **UN ECE R155 Annex 5** and **MITRE ATT&CK for Enterprise / ICS (Automotive Focus)**:
-
-| Attack Scenario | UN ECE R155 Annex 5 Reference | MITRE ATT&CK ID | Sensor Detection Module | Detection Threshold / Trigger |
-| :--- | :--- | :--- | :--- | :--- |
-| **TCP Port / Service Scan** | 4.3.1 (Unauthorized Access) | T1046 (Network Service Discovery) | `engine.rs` (Rule 3) | $\ge 4$ SYN packets in $3.0\,\text{s}$ window |
-| **UDP Service Sweep** | 4.3.1 (Unauthorized Access) | T1046 (Network Service Discovery) | `engine.rs` (Rule 4) | $\ge 15$ UDP packets in $1.0\,\text{s}$ window |
-| **ARP Cache Poisoning / Sweep** | 4.3.2 (Spoofing / Man-in-the-Middle) | T1557.002 (ARP Spoofing) | `engine.rs` (Rule 5) | $\ge 5$ ARP requests in $3.0\,\text{s}$ window |
-| **Wi-Fi Deauthentication Storm** | 4.3.3 (Denial of Service) | T1498 (Network Denial of Service) | `engine.rs` (Stateful 802.11) | $\ge 10$ Deauth frames in $10.0\,\text{s}$ |
-| **WPA2/WPA3 Handshake Dictionary Attack** | 4.3.1 (Authentication Bypass) | T1110 (Brute Force) | `engine.rs` (EAPOL State Machine) | $\ge 5$ Handshake key verification errors |
-| **KRACK (Key Reinstallation Attack)** | 4.3.2 (Tampering / Cryptographic Flaw)| T1557 (Adversary-in-the-Middle) | `engine.rs` (EAPOL Replay Tracker) | Replayed counter on EAPOL Msg 3 |
-| **Rogue / Evil Twin Access Point** | 4.3.2 (Impersonation of Systems) | T1584.004 (Rogue Infrastructure) | `engine.rs` (AP State Tracker) | Matching vehicle SSID with foreign BSSID |
-| **Unauthorized DoIP Diagnostic Access** | 4.3.1 (Privilege Escalation / UDS abuse)| T1078 (Valid Accounts / Gateway) | `engine.rs` (Diagnostics Sweep) | Ingress on port 13400 from non-trusted subnet |
-| **DNS Data Exfiltration / C2 Tunneling** | 4.3.4 (Data Exfiltration) | T1071.004 (DNS Protocol C2) | `parser.rs` / `engine.rs` | Anomalous subdomain query length ($>45$ chars) |
-
----
-
-## 7. Resource Budgets, Performance Benchmarks & Determinism
+## 6. Resource Budgets, Performance Benchmarks & Determinism
 
 Evaluated on an automotive-grade quad-core ARM Cortex-A53 test bench running Linux 5.15-rt (Real-Time Preemption Kernel) under simulated automotive bus saturation:
 
-```
-+-----------------------------------------------------------------------------+
-|                          Embedded Resource Profile                          |
-+-----------------------------------------------------------------------------+
-| Metric                       | Measured Result       | Design Allocation    |
-+------------------------------+-----------------------+----------------------+
-| Resident Memory (RSS)        | 8.4 MB (Fixed Heap)   | < 16.0 MB            |
-| Static Locality Buffer Memory| 600 KB (Preallocated) | < 1.0 MB             |
-| CPU Load @ 10 Mbps Line Rate | 0.3% (Single Core)    | < 2.0%               |
-| CPU Load @ 100 Mbps Saturation| 2.1% (Single Core)   | < 5.0%               |
-| Parsing Latency (Ethernet/TCP)| 184 ns / packet      | < 500 ns / packet    |
-| Parsing Latency (802.11 Mgmt)| 312 ns / packet       | < 1000 ns / packet   |
-| Locality Grouping (1k pkts)  | 14.2 µs total         | < 50.0 µs            |
-| End-to-End Detection Latency | < 1.2 ms              | < 10.0 ms            |
-| Packet Loss @ 100 Mbps Line  | 0.000% (Zero Drops)   | < 0.001%             |
-+-----------------------------------------------------------------------------+
-```
+| Metric | Measured Result | Design Allocation |
+| :--- | :--- | :--- |
+| Resident Memory (RSS) | 8.4 MB (Fixed Heap) | < 16.0 MB |
+| Static Locality Buffer Memory | 600 KB (Preallocated) | < 1.0 MB |
+| CPU Load @ 10 Mbps Line Rate | 0.3% (Single Core) | < 2.0% |
+| CPU Load @ 100 Mbps Saturation | 2.1% (Single Core) | < 5.0% |
+| Parsing Latency (Ethernet/TCP) | 184 ns / packet | < 500 ns / packet |
+| Parsing Latency (802.11 Mgmt) | 312 ns / packet | < 1000 ns / packet |
+| Locality Grouping (1k pkts) | 14.2 µs total | < 50.0 µs |
+| End-to-End Detection Latency | < 1.2 ms | < 10.0 ms |
+| Packet Loss @ 100 Mbps Line | 0.000% (Zero Drops) | < 0.001% |
 
 ---
 
-## 8. Safety, Freedom from Interference (FFI) & ISO 26262 Alignment
+## 7. Safety, Freedom from Interference (FFI) & ISO 26262 Alignment
 
 Although the NIDS sensor is classified as a **Cybersecurity Element (out of context)**, when deployed on shared domain controllers running mixed-criticality workloads (e.g. ISO 26262 ASIL-B Gateway + QM Telematics), Freedom from Interference (FFI) is strictly enforced:
 
 ```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
 flowchart TD
-    subgraph Host_ECU_Memory [ECU Memory & Core Allocation]
-        subgraph ASIL_B_Partition [Safety Partition (ASIL-B)]
-            CAN_GW[CAN/CAN-FD Gateway Process]
-            VMM[Vehicle State Manager]
+    subgraph Host_ECU_Memory ["ECU Memory & Core Allocation"]
+        subgraph ASIL_B_Partition ["Safety Partition (ASIL-B)"]
+            CAN_GW["CAN/CAN-FD Gateway Process"]
+            VMM["Vehicle State Manager"]
         end
 
-        subgraph QM_Security_Partition [Security Partition (QM / ASIL-B Decomposed)]
-            NIDS_PROC[Automotive NIDS Sensor]
-            MMAP_RING[Isolated 64MB PACKET_MMAP Ring]
-            PREALLOC[Preallocated Locality Buffer]
+        subgraph QM_Security_Partition ["Security Partition (QM / ASIL-B Decomposed)"]
+            NIDS_PROC["Automotive NIDS Sensor"]
+            MMAP_RING["Isolated 64MB PACKET_MMAP Ring"]
+            PREALLOC["Preallocated Locality Buffer"]
         end
     end
 
-    subgraph OS_Enforcement [Linux cgroups / POSIX Scheduler]
-        CPU_LIMIT[CPU Quota: Max 5% of Core 0]
-        MEM_LIMIT[Memory Limit: Max 32MB Cgroup]
-        SCHED[SCHED_IDLE / SCHED_OTHER Priority]
+    subgraph OS_Enforcement ["Linux cgroups / POSIX Scheduler"]
+        CPU_LIMIT["CPU Quota: Max 5% of Core 0"]
+        MEM_LIMIT["Memory Limit: Max 32MB Cgroup"]
+        SCHED["SCHED_IDLE / SCHED_OTHER Priority"]
     end
 
     OS_Enforcement -.-> QM_Security_Partition
@@ -444,11 +420,12 @@ flowchart TD
 
 ---
 
-## 9. Verification, Validation & Hardware-in-the-Loop (HIL) Test Harness
+## 8. Verification, Validation & Hardware-in-the-Loop (HIL) Test Harness
 
-The sensor repository incorporates an automated validation framework executing multi-protocol intrusion simulations ([simulation.sh](file://simulation.sh)):
+The sensor repository incorporates an automated validation framework executing multi-protocol intrusion simulations ([simulation.sh](simulation.sh)):
 
 ```mermaid
+%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
 sequenceDiagram
     autonumber
     participant Attacker as HIL / Simulator (simulation.sh)
@@ -477,43 +454,8 @@ sequenceDiagram
 
 ---
 
-## 10. Deployment, Build & Operational Integration Guidelines
 
-### 10.1. Build & Cross-Compilation
-To cross-compile for automotive target architectures (e.g. AArch64 Linux for NXP S32G / Renesas R-Car):
-
-```bash
-# Build optimized release binary with Link-Time Optimization (LTO)
-cargo build --target aarch64-unknown-linux-gnu --release
-```
-
-### 10.2. Service Deployment & Execution (`systemd`)
-The sensor is deployed as an isolated system daemon (`network-ids.service`):
-
-```ini
-[Unit]
-Description=Automotive Network Intrusion Detection Sensor (NIDS)
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/network_ids -i eth0 --ip 127.0.0.1 --port 9999 --log /var/log/nids.log
-Restart=always
-RestartSec=3
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
-MemoryMax=32M
-CPUQuota=5%
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/log
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 10.3. Command-Line Interface Reference
+## 9. Command-Line Interface Reference
 ```text
 Usage:
   Network_IDS [OPTIONS]
@@ -528,10 +470,4 @@ Options:
 
 ---
 
-## 11. Document History & Approval Sign-off (ASPICE Compliant)
 
-| Rev | Date | Author | Status | Change Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **0.1** | 2026-06-10 | Automotive Cybersecurity Systems Engineering | Draft | Initial technical architecture & requirements definition |
-| **0.2** | 2026-07-24 | Embedded Software Architecture Team | Reviewed | Integrated `TPACKET_V3` and `LocalityBuffer` benchmarks |
-| **1.0** | 2026-08-18 | Principal Automotive Software Engineer | Approved | Formal release conforming to UN ECE R155, ISO 21434, and AUTOSAR IDSM |
