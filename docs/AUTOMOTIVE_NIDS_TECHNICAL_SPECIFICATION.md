@@ -109,69 +109,7 @@ The NIDS Sensor is architected from the ground up to satisfy stringent internati
 
 ---
 
-## 2. In-Vehicle System Topology & Deployment Architectures
-
-The NIDS Sensor is deployable across multiple automotive ECU classes within the E/E (Electrical/Electronic) Architecture:
-
-```mermaid
-%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
-flowchart TB
-    subgraph External_Interfaces ["External Communication Interfaces"]
-        V2X["V2X / C-V2X 802.11p / C-V2X"]
-        CEL["5G/LTE Cellular Telematics"]
-        WIFI["In-Vehicle Wi-Fi 802.11ac/ax Hotspot"]
-        OBD["OBD-II / Diagnostic Port"]
-    end
-
-    subgraph Domain_Controllers ["Automotive Domain Controllers & Gateways"]
-        subgraph TCU_Node ["Telematics Control Unit (TCU) / Gateway"]
-            NIDS1["Embedded NIDS Sensor Node 1"]
-            TCU_LINUX["Linux / QNX / POSIX OS"]
-        end
-
-        subgraph IVI_Node ["In-Vehicle Infotainment (IVI) Domain"]
-            NIDS2["Embedded NIDS Sensor Node 2"]
-            IVI_OS["Android Automotive / AGL"]
-        end
-
-        subgraph CGW_Node ["Central Gateway (CGW) / HPC"]
-            NIDS3["Embedded NIDS Sensor Node 3"]
-            AUTOSAR_AP["AUTOSAR Adaptive Platform"]
-        end
-    end
-
-    subgraph InVehicle_Buses ["In-Vehicle Bus Infrastructure"]
-        ETH_TSN["100/1000BASE-T1 Automotive Ethernet TSN"]
-        CAN_FD["CAN-FD / CAN XL Sub-Buses"]
-    end
-
-    subgraph Security_Backend ["Vehicle Security Management"]
-        IDSM_CORE["Onboard AUTOSAR IDSM Core / Aggregator"]
-        SEC_STORAGE["Hardware Security Module / Secure Flash"]
-        VSOC["Offboard Cloud VSOC / SIEM"]
-    end
-
-    V2X --> TCU_LINUX
-    CEL --> TCU_LINUX
-    WIFI --> IVI_OS
-    OBD --> AUTOSAR_AP
-
-    TCU_LINUX <--> ETH_TSN
-    IVI_OS <--> ETH_TSN
-    AUTOSAR_AP <--> ETH_TSN
-    AUTOSAR_AP <--> CAN_FD
-
-    NIDS1 -->|IDSM Alert Stream| IDSM_CORE
-    NIDS2 -->|IDSM Alert Stream| IDSM_CORE
-    NIDS3 -->|IDSM Alert Stream| IDSM_CORE
-
-    IDSM_CORE --> SEC_STORAGE
-    IDSM_CORE -->|Encrypted Telematics Uplink| VSOC
-```
-
----
-
-## 3. End-to-End Functional Architecture & Zero-Copy Pipeline
+## 2. End-to-End Functional Architecture & Zero-Copy Pipeline
 
 The NIDS Sensor implements a 5-stage deterministic pipeline. Data moves from the network physical layer (PHY) to the intrusion detection alert dispatcher without duplicate memory buffers or runtime heap allocation:
 
@@ -220,11 +158,11 @@ flowchart LR
 
 ---
 
-## 4. Engineering for Ultra-Low Computing Power & Resource Constraints
+## 3. Engineering for Ultra-Low Computing Power & Resource Constraints
 
 Automotive ECUs operate under strict thermal envelopes, low power budgets (milliwatts in standby, <5W active), and limited RAM/L2 cache capacity. The NIDS sensor achieves industry-leading efficiency through five core engineering mechanisms:
 
-### 4.1. Kernel-to-Userland Zero-Copy via `PACKET_MMAP` (`TPACKET_V3`)
+### 3.1. Kernel-to-Userland Zero-Copy via `PACKET_MMAP` (`TPACKET_V3`)
 Traditional packet capture (`libpcap`, standard `AF_PACKET` with `recv()`/`read()`) induces severe overhead:
 1. Every packet triggers a kernel-to-userland context switch (`~1.5 µs` penalty).
 2. Every packet triggers a memory copy from kernel socket buffers (`sk_buff`) to userland buffers.
@@ -237,13 +175,13 @@ Traditional packet capture (`libpcap`, standard `AF_PACKET` with `recv()`/`read(
 - Configures a deterministic block retirement timeout (`tp_retire_blk_tov = 10` ms), guaranteeing maximum latency bounds of 10 ms during low-traffic periods while enabling bulk processing during volumetric storms.
 - RAII-managed `BlockGuard` automatically clears `TP_STATUS_KERNEL` ownership bits upon scope exit, recycling ring buffer blocks back to the kernel without runtime bookkeeping overhead.
 
-### 4.2. Lifetime-Bounded Zero-Copy Protocol Parsing (`parser.rs`)
+### 3.2. Lifetime-Bounded Zero-Copy Protocol Parsing (`parser.rs`)
 - High-level languages frequently allocate strings and vectors on the heap when decoding packet headers.
 - The NIDS parser uses Rust lifetime parameters (`ParsedPacket<'a>`, `Ipv4Info<'a>`, `TcpInfo<'a>`, `EapolInfo<'a>`).
 - Payloads and byte sequences are represented strictly as borrowed sub-slices (`&'a [u8]`) pointing directly into the mapped memory block.
 - Zero heap allocations (`malloc`/`calloc`) occur on the hot parsing path.
 
-### 4.3. 64-Byte Cache-Aligned Locality Buffer with `O(N)` Counting Sort (`locality.rs`)
+### 3.3. 64-Byte Cache-Aligned Locality Buffer with `O(N)` Counting Sort (`locality.rs`)
 In multi-stream network traffic, packet processing order is randomized across different flows, thrashing CPU L1 Data (`32 KB`) and L2 (`512 KB`) caches as state tables for disparate connections are loaded and evicted repeatedly.
 
 **NIDS Sensor Locality Architecture:**
@@ -272,7 +210,7 @@ In multi-stream network traffic, packet processing order is randomized across di
 3. **`O(K)` Active Bucket Recycling:** Standard counting sort requires clearing all 65,536 count buckets ($O(65536)$ per batch). The sensor tracks active port indices in an `active_buckets` array, clearing only the $K$ active buckets (`K ≤ 4096`), saving `>93%` of clearing cycles per batch.
 4. **Optimal Spatial & Temporal Locality:** The stateful engine processes contiguous runs of packets belonging to identical ports, keeping connection states hot in the L1/L2 cache and maximizing hardware prefetcher efficiency.
 
-### 4.4. Fixed-Capacity Memory Tables & Deterministic State Pruning (`engine.rs`)
+### 3.4. Fixed-Capacity Memory Tables & Deterministic State Pruning (`engine.rs`)
 Unbounded state tracking in conventional IDS tools (e.g. Snort, Zeek) leads to Out-Of-Memory (OOM) kernel panics when subjected to denial-of-service floods.
 - The NIDS sensor bounds memory via a 60-second sliding correlation window.
 - Pruning runs on a deterministic 5-second tick (`now - last_cleanup_time >= 5.0`).
@@ -281,9 +219,9 @@ Unbounded state tracking in conventional IDS tools (e.g. Snort, Zeek) leads to O
 
 ---
 
-## 5. Subsystem Technical Specifications
+## 4. Subsystem Technical Specifications
 
-### 5.1. Packet Acquisition Engine (`capture.rs`)
+### 4.1. Packet Acquisition Engine (`capture.rs`)
 
 ```
 +------------------------------------------------------------------------------+
@@ -302,40 +240,9 @@ Unbounded state tracking in conventional IDS tools (e.g. Snort, Zeek) leads to O
 - **Interface Abstraction:** Auto-identifies link layers (`ARPHRD_ETHER` $\to$ Ethernet, `ARPHRD_IEEE80211` $\to$ 802.11 Wi-Fi, `ARPHRD_IEEE80211_RADIOTAP` $\to$ Radiotap Wi-Fi) via `/sys/class/net/<iface>/type`.
 - **Fault-Tolerant Simulation Fallback:** If raw socket privileges are unavailable (e.g., in unit-test virtual environments without `CAP_NET_RAW`), the capture engine gracefully transitions to simulation mode without crashing.
 
-### 5.2. Multi-Layer Zero-Copy Parser (`parser.rs`)
+### 4.2. Multi-Layer Zero-Copy Parser (`parser.rs`)
 
-The parser handles recursive layer decoding across automotive communication stacks:
-
-```mermaid
-%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
-flowchart TD
-    A[Raw Frame Data] --> B{Link Layer}
-    B -->|Ethernet 0x0800 / 0x86DD / 0x8100| C[Ethernet Decoder]
-    B -->|802.11 Radiotap| D[Radiotap + IEEE 802.11 Frame Decoder]
-
-    C -->|802.1Q / 802.1ad QinQ| E[VLAN Stripper & PCP/DEI Extractor]
-    E --> F{Network Layer}
-
-    F -->|0x0800| G[IPv4 Parser]
-    F -->|0x86DD| H[IPv6 Parser & Ext Header Walker]
-    F -->|0x0806| I[ARP Parser]
-
-    G --> J{Transport Layer}
-    H --> J
-
-    J -->|Protocol 6| K[TCP Parser: Flags, Options, SACK, TS]
-    J -->|Protocol 17| L[UDP Parser]
-    J -->|Protocol 1 / 58| M[ICMP / ICMPv6 Parser]
-
-    D --> N[Wi-Fi Mgmt: Beacons, Probes, Auth, Assoc, Deauth]
-    D --> O[EAPOL 802.1X Key Exchange Parser]
-
-    K --> P{Application Layer}
-    L --> P
-    P -->|Port 53| Q[DNS Decoder: Subdomain, Query Type]
-    P -->|Port 67/68| R[DHCP Decoder: Options, Hostname, Lease]
-    P -->|EtherType 0x888E| O
-```
+The parser handles recursive layer decoding across automotive communication stacks.
 
 **Key Decoded Protocol Fields:**
 - **IEEE 802.1Q / QinQ VLANs:** 12-bit VLAN IDs, 3-bit Priority Code Point (PCP) for TSN automotive prioritization.
@@ -344,7 +251,7 @@ flowchart TD
 - **EAPOL 802.1X:** 4-Way Handshake step tracking, Replay Counter verification (KRACK prevention), Key MIC, PMKID parsing.
 - **Automotive Diagnostics (DoIP):** ISO 13400-2 header structures over TCP/UDP port 13400.
 
-### 5.3. Stateful Detection Engine & Rule Processing (`engine.rs`)
+### 4.3. Stateful Detection Engine & Rule Processing (`engine.rs`)
 
 The detection engine combines **Dynamic JSON-Driven Declarative Rules** (`rules.json`) with **Stateful Heuristic Protocol Analyzers**:
 
@@ -394,7 +301,7 @@ stateDiagram-v2
    - **EAPOL Handshake Brute Force & KRACK:** Detects key verification failures and repeated replay counters on Message 3 of the 4-Way handshake.
    - **Security Downgrade:** Alerts if vehicle hotspot shifts from WPA2/WPA3 to Open encryption.
 
-### 5.4. IDSM Security Event Format & Compression (`alert.rs`)
+### 4.4. IDSM Security Event Format & Compression (`alert.rs`)
 
 Security events generated by the NIDS sensor strictly mirror the **AUTOSAR IDSM Event Schema**:
 
@@ -440,7 +347,7 @@ Security events generated by the NIDS sensor strictly mirror the **AUTOSAR IDSM 
 
 ---
 
-## 6. Resource Budgets, Performance Benchmarks & Determinism
+## 5 Resource Budgets, Performance Benchmarks & Determinism
 
 Evaluated on an automotive-grade quad-core ARM Cortex-A53 test bench running Linux 5.15-rt (Real-Time Preemption Kernel) under simulated automotive bus saturation:
 
@@ -458,7 +365,7 @@ Evaluated on an automotive-grade quad-core ARM Cortex-A53 test bench running Lin
 
 ---
 
-## 7. Safety, Freedom from Interference (FFI) & ISO 26262 Alignment
+## 6. Safety, Freedom from Interference (FFI) & ISO 26262 Alignment
 
 Although the NIDS sensor is classified as a **Cybersecurity Element (out of context)**, when deployed on shared domain controllers running mixed-criticality workloads (e.g. ISO 26262 ASIL-B Gateway + QM Telematics), Freedom from Interference (FFI) is strictly enforced:
 
@@ -493,42 +400,7 @@ flowchart TD
 
 ---
 
-## 8. Verification, Validation & Hardware-in-the-Loop (HIL) Test Harness
-
-The sensor repository incorporates an automated validation framework executing multi-protocol intrusion simulations ([simulation.sh](simulation.sh)):
-
-```mermaid
-%%{init: {'flowchart': {'htmlLabels': true, 'curve': 'basis'}}}%%
-sequenceDiagram
-    autonumber
-    participant Attacker as HIL / Simulator (simulation.sh)
-    participant Kernel as Linux Kernel / AF_PACKET
-    participant NIDS as NIDS Sensor Core
-    participant Log as IDSM Telemetry (nids.log / Forwarder)
-
-    Note over Attacker,Log: Test Case 1: TCP Port Sweep Simulation (Rule 3)
-    Attacker->>Kernel: Transmit 6 TCP SYN Packets to Ports 22, 80, 443, 8080, 3306, 5432
-    Kernel->>NIDS: TPACKET_V3 Block Retired (Zero-Copy)
-    NIDS->>NIDS: Locality Buffer Sorting + TCP SYN State Machine Evaluation
-    NIDS->>Log: Emit IDSM Alert (RULE-3: TCP Port Scan, Severity: Medium)
-
-    Note over Attacker,Log: Test Case 2: UDP Flooding Simulation (Rule 4)
-    Attacker->>Kernel: Burst 20 UDP Packets in <1s window
-    Kernel->>NIDS: TPACKET_V3 Block Retired
-    NIDS->>NIDS: Volumetric Rate Tracker Triggered (>15 pkts/sec)
-    NIDS->>Log: Emit IDSM Alert (RULE-4: UDP Port Scan, Severity: Medium)
-
-    Note over Attacker,Log: Test Case 3: ARP Subnet Reconnaissance (Rule 5)
-    Attacker->>Kernel: Transmit 8 ARP Who-Has Requests over /29 Subnet
-    Kernel->>NIDS: TPACKET_V3 Block Retired
-    NIDS->>NIDS: ARP State Counter Evaluated (>5 requests in 3s)
-    NIDS->>Log: Emit IDSM Alert (RULE-5: ARP Scan, Severity: Medium)
-```
-
----
-
-
-## 9. Command-Line Interface Reference
+## 7. Command-Line Interface Reference
 ```text
 Usage:
   Network_IDS [OPTIONS]
