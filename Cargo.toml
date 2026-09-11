@@ -9,6 +9,7 @@ etherparse = "0.20.2"  # Parse Ethernet, IPv4, TCP, UDP, ICMP, and ARP packets.
 chrono = "0.4"  # Date and time library for Rust.
 serde = { version = "1.0", features = ["derive"] }  # Serialization and deserialization framework for Rust.
 serde_json = "1.0"  # JSON serialization and deserialization for Rust.
+tokio = { version = "1", features = ["full"] }
 
 
 

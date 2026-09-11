@@ -4,14 +4,20 @@ use std::fs::File;
 use std::io::Write;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use tokio::sync::mpsc as tokio_mpsc;
 
 use network_ids::engine::StatefulDetectionEngine;
+use network_ids::flow_parser;
+use network_ids::flow_table::{Packet as FlowPacket, SharedState};
+use network_ids::pcap_logger;
 use network_ids::{capture, locality, parser};
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut interface_name = None;
@@ -73,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Ok(l) => l,
         Err(e) => {
             eprintln!("[Error] Failed to open log file: {}", e);
-            return Err(Box::new(e));
+            return Err(e.into());
         }
     };
 
@@ -89,21 +95,90 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let (tx_alerts, rx_alerts) = mpsc::channel();
+    let (tx_alerts, rx_alerts) = std_mpsc::channel();
     let is_running = Arc::new(AtomicBool::new(true));
     let is_running_clone = is_running.clone();
 
     let link_type = detect_link_type(interface_name.as_deref());
-
-    // 1. Launch raw packet capture thread
     let iface = interface_name.map(|s| s.to_string());
+
+    // 1. Initialize Tokio Shared State for Flow Table & Memory Management
+    let shared_flow_state = Arc::new(SharedState::new(10_000));
+    let (tx_packets, mut rx_packets) = tokio_mpsc::channel::<(Vec<u8>, Instant)>(10_000);
+
+    // 2. Launch Background Tokio Task: Periodic Cleanup Task (Runs every 10 seconds)
+    let cleanup_state = shared_flow_state.clone();
+    let logger_cleanup = logger.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            let removed = cleanup_state.cleanup_inactive_flows();
+            if removed > 0 {
+                logger_cleanup.log(&format!(
+                    "[Flow Table Cleanup] Removed {} inactive flow(s) (inactive >60s).",
+                    removed
+                ));
+            }
+        }
+    });
+
+    // 3. Launch Background Tokio Task: Packet Processor Task
+    let processor_state = shared_flow_state.clone();
+    let target_log_path = log_file_path.unwrap_or("nids.log").to_string();
+    let logger_processor = logger.clone();
+
+    tokio::spawn(async move {
+        while let Some((raw_bytes, ts)) = rx_packets.recv().await {
+            // Core Requirement 1: Extract 4-tuple flow key with error handling
+            match flow_parser::parse_flow_key(&raw_bytes) {
+                Ok(flow_key) => {
+                    let flow_pkt = FlowPacket {
+                        timestamp: ts,
+                        data: raw_bytes,
+                    };
+
+                    // Core Requirement 2, 3, 4, 6: Flow Segregation, Circular Buffer, LRU Eviction
+                    let (burst_detected, burst_packets) =
+                        processor_state.process_packet(flow_key, flow_pkt);
+
+                    // Core Requirement 5: Burst Detection Action
+                    if burst_detected {
+                        if let Some(pkts) = burst_packets {
+                            logger_processor.log(&format!(
+                                "[BURST DETECTED] Flow ({}.{}.{}.{}:{} -> {}.{}.{}.{}:{}) triggered 100 packets in <60s burst alert!",
+                                (flow_key.0 >> 24) & 0xFF,
+                                (flow_key.0 >> 16) & 0xFF,
+                                (flow_key.0 >> 8) & 0xFF,
+                                flow_key.0 & 0xFF,
+                                flow_key.1,
+                                (flow_key.2 >> 24) & 0xFF,
+                                (flow_key.2 >> 16) & 0xFF,
+                                (flow_key.2 >> 8) & 0xFF,
+                                flow_key.2 & 0xFF,
+                                flow_key.3
+                            ));
+                            let log_file = target_log_path.clone();
+                            tokio::spawn(async move {
+                                pcap_logger::log_burst(log_file, flow_key, pkts).await;
+                            });
+                        }
+                    }
+                }
+                Err(_err) => {
+                    // Gracefully skip non-IPv4 / non-TCP/UDP / malformed packets
+                }
+            }
+        }
+    });
+
+    // 4. Raw packet capture thread with locality buffering
     let tx_alerts_capture = tx_alerts.clone();
     let logger_capture = logger.clone();
 
     thread::spawn(move || {
         let default_link = link_type;
 
-        // Attempt to create raw socket. If it fails (due to permissions or platform), log and wait
         let mut capture_engine = match capture::MmapCapture::new(iface.as_deref()) {
             Ok(cap) => cap,
             Err(e) => {
@@ -115,7 +190,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 logger_capture.log_err(
                     "[Info] Running in simulation fallback mode. Real traffic will not be monitored."
                 );
-                // Fall loop: park the thread
                 while is_running_clone.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(200));
                 }
@@ -123,17 +197,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         };
 
-        // Preallocate locality buffer and detection engine
         let mut locality_buffer = Box::new(locality::LocalityBuffer::new());
         let mut detection_engine =
             StatefulDetectionEngine::new(iface.clone().unwrap_or_else(|| "wlan0".to_string()));
 
         while is_running_clone.load(Ordering::Relaxed) {
-            // Poll for next mmap retired block
             if let Some(block_guard) = capture_engine.next_block(Duration::from_millis(50)) {
                 locality_buffer.clear();
 
-                // 1. Zero-copy extract packets from the block, pre-parse ports, and add to locality buffer
                 for raw_pkt in block_guard.packets() {
                     let parsed = parser::parse_packet(raw_pkt.data, default_link, None);
 
@@ -158,20 +229,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                     );
                 }
 
-                // 2. Perform locality buffering counting sort grouping (zero copy, contiguous layout)
                 locality_buffer.group_packets();
 
-                // 3. Process grouped packets through the stateful engine
                 for i in 0..locality_buffer.active_count {
                     let port = locality_buffer.active_buckets[i];
                     let slice = locality_buffer.get_bucket_slice(port);
                     for pkt_ref in slice {
-                        // Re-slice safely from mmap reference pointer
                         let raw_slice = unsafe {
                             slice::from_raw_parts(pkt_ref.data_ptr, pkt_ref.len as usize)
                         };
-                        let parsed = parser::parse_packet(raw_slice, default_link, None);
 
+                        // Send packet bytes to Tokio flow processing task with non-blocking backpressure
+                        let _ = tx_packets.try_send((raw_slice.to_vec(), Instant::now()));
+
+                        // Also run detection engine rules
+                        let parsed = parser::parse_packet(raw_slice, default_link, None);
                         let timestamp =
                             pkt_ref.sec as f64 + (pkt_ref.nsec as f64 / 1_000_000_000.0);
                         let generated_alerts = detection_engine.process_packet(&parsed, timestamp);
@@ -188,22 +260,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut forwarder = target_addr.map(|addr| AlertForwarder::new(addr));
 
     let start_msg = format!(
-        "[Info] Network Intrusion Detection System started at {}.\nMonitoring traffic... ",
+        "[Info] Network Intrusion Detection System & Flow Table Processor started at {}.\nMonitoring traffic...",
         Local::now()
     );
     logger.log(&start_msg);
-    // if let Some(ref mut f) = forwarder {
-    //     f.send(start_msg);
-    // }
 
-    while let Ok(msg) = rx_alerts.recv() {
-        if let Ok(json) = serde_json::to_string_pretty(&msg) {
-            logger.log(&json);
-            if let Some(ref mut f) = forwarder {
-                f.send(&json);
+    // Spawn alert handling loop on blocking task or async loop
+    tokio::task::spawn_blocking(move || {
+        while let Ok(msg) = rx_alerts.recv() {
+            if let Ok(json) = serde_json::to_string_pretty(&msg) {
+                logger.log(&json);
+                if let Some(ref mut f) = forwarder {
+                    f.send(&json);
+                }
             }
         }
-    }
+    }).await.ok();
 
     Ok(())
 }
@@ -212,18 +284,16 @@ fn detect_link_type(interface: Option<&str>) -> parser::LinkType {
     let Some(iface) = interface else {
         return parser::LinkType::Ethernet;
     };
-    // Query /sys/class/net/<interface>/type
     if let Ok(type_str) = std::fs::read_to_string(format!("/sys/class/net/{}/type", iface)) {
         if let Ok(type_val) = type_str.trim().parse::<u16>() {
             match type_val {
-                1 => return parser::LinkType::Ethernet,       // ARPHRD_ETHER
-                801 => return parser::LinkType::Wifi80211,    // ARPHRD_IEEE80211
-                803 => return parser::LinkType::RadiotapWifi, // ARPHRD_IEEE80211_RADIOTAP
+                1 => return parser::LinkType::Ethernet,
+                801 => return parser::LinkType::Wifi80211,
+                803 => return parser::LinkType::RadiotapWifi,
                 _ => {}
             }
         }
     }
-    // Fallback to auto-detecting per-packet using Unknown
     parser::LinkType::Unknown
 }
 
@@ -235,7 +305,6 @@ struct AlertForwarder {
 
 impl AlertForwarder {
     fn new(target_addr: String) -> Self {
-        // Try TCP connection first, fallback to UDP
         let tcp_stream = std::net::TcpStream::connect(&target_addr).ok();
         let udp_socket = if tcp_stream.is_none() {
             std::net::UdpSocket::bind("0.0.0.0:0").ok()
@@ -250,14 +319,12 @@ impl AlertForwarder {
     }
 
     fn send(&mut self, data: &str) {
-        use std::io::Write;
         if let Some(ref mut stream) = self.tcp_stream {
             if stream.write_all(data.as_bytes()).is_ok() {
                 let _ = stream.write_all(b"\n");
                 let _ = stream.flush();
                 return;
             }
-            // TCP failed, try to reconnect or fallback to UDP
             self.tcp_stream = None;
             self.udp_socket = std::net::UdpSocket::bind("0.0.0.0:0").ok();
         }
@@ -269,36 +336,17 @@ impl AlertForwarder {
 }
 
 fn print_help() {
-    println!("Network Intrusion Detection System (NIDS) - Help Manual");
+    println!("Network Intrusion Detection System (NIDS) & Tokio Flow Table Engine");
     println!();
     println!("Usage:");
     println!("  Network_IDS [OPTIONS]");
     println!();
     println!("Options:");
-    println!(
-        "  -i, --interface <name>   Specify the network interface to monitor (e.g. wlan0, eth0)"
-    );
-    println!("                           Default: wlan0");
-    println!(
-        "  -ip, --ip,               Specify the destination host/IP to forward monitored and filtered data"
-    );
-    println!("  -host, --host <ip[:port]> Example: --ip 192.168.1.50 or --ip 127.0.0.1:8080");
-    println!(
-        "  -p, -port, --port <port> Specify the destination port number (if not provided in host/IP)"
-    );
-    println!("                           Default: 9999");
-    println!("  -l, --log,");
-    println!(
-        "  -o, --output <path>      Specify the log file path to write output (or 'none' to disable)"
-    );
-    println!("                           Default: nids.log");
-    println!("  -h, --help               Display this help manual and exit");
-    println!();
-    println!("Examples:");
-    println!("  Network_IDS -i eth0");
-    println!("  Network_IDS --ip 127.0.0.1 --port 9090");
-    println!("  Network_IDS -i wlan0 -ip 192.168.1.10:9999");
-    println!("  Network_IDS --log output.log");
+    println!("  -i, --interface <name>   Specify network interface to monitor (e.g. wlan0, eth0)");
+    println!("  -ip, --ip <ip[:port]>    Specify destination host/IP for alert forwarding");
+    println!("  -p, --port <port>        Specify destination port number (default: 9999)");
+    println!("  -l, -o, --log <path>     Specify log file path (default: nids.log)");
+    println!("  -h, --help               Display help manual");
 }
 
 #[derive(Clone)]
